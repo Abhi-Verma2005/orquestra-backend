@@ -27,3 +27,16 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 
 # Date/time
 chrono = { version = "0.4", features = ["serde"] }
+
+# HTTP client
+reqwest = { version = "0.11", features = ["json"] }
+
+# WebSocket support
+tokio-tungstenite = "0.21"
+futures-util = "0.3"
+
+# Error handling
+thiserror = "1.0"
+
+# Async traits
+async-trait = "0.1"
