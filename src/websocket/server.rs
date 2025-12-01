@@ -33,7 +33,8 @@ impl WebSocketServer {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        let addr = format!("127.0.0.1:{}", self.port);
+        // Bind to 0.0.0.0 to accept connections from any interface (needed for deployment)
+        let addr = format!("0.0.0.0:{}", self.port);
         println!("📡 WebSocket server listening on: {}", addr);
 
         let listener = match TcpListener::bind(&addr).await {
