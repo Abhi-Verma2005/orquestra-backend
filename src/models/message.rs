@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
+#[serde(rename_all = "lowercase")]
 pub enum Role {
     System,
     User,
@@ -19,7 +20,8 @@ impl ToString for Role {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone)]
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
     pub role: Role,
     pub content: String,

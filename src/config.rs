@@ -5,6 +5,7 @@ use dotenvy;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub gemini_api_key: String,
+    pub openai_api_key: String,
 }
 
 impl Config {
@@ -13,8 +14,9 @@ impl Config {
         dotenvy::dotenv().ok(); // Use .ok() to make it optional
         
         Ok(Config {
-            gemini_api_key: env::var("GOOGLE_GENERATIVE_AI_API_KEY")
-                .expect("API key is required")
+            gemini_api_key: env::var("GOOGLE_GENERATIVE_AI_API_KEY").unwrap_or_default(),
+            openai_api_key: env::var("OPENAI_API_KEY")
+                .expect("OPENAI_API_KEY environment variable is required")
         })
     }
 }

@@ -29,10 +29,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "8080".to_string())
         .parse::<u16>()?;
     
-    let websocket_server = WebSocketServer::new(ws_port);
     let orchestrator = OrchestratorService::new(config);
+    let websocket_server = WebSocketServer::new(ws_port, orchestrator);
     
-    // Start services concurrently
+    // Start WebSocket server
     tokio::select! {
         _ = websocket_server.run() => {
             println!("WebSocket server stopped");
