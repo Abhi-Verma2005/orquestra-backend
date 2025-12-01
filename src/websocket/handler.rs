@@ -27,8 +27,8 @@ pub async fn handle_connection(
     
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
-        Err(_) => {
-            println!("Failed WebSocket handshake: {}", addr);
+        Err(e) => {
+            println!("❌ Failed WebSocket handshake from {}: {:?}", addr, e);
             return;
         }
     };
