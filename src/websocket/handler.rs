@@ -155,7 +155,7 @@ pub async fn handle_connection(
                         ).await;
                     }
                     Err(e) => {
-                        println!("❌ [{}] Failed to parse WebSocket message: {} | Raw text: {}", addr_clone2, e, text);
+                        println! ("❌ [{}] Failed to parse WebSocket message: {} | Raw text: {}", addr_clone2, e, text);
                     }
                 }
             }
