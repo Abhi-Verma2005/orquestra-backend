@@ -5,13 +5,38 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
-use tokio_tungstenite::{accept_async, tungstenite::Message};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_tungstenite::{accept_hdr_async, tungstenite::{Message, handshake::server::Request}};
 use futures_util::{SinkExt, StreamExt};
 use crate::orchestrator::service::OrchestratorService;
 use crate::websocket::protocol::{
     Clients, ClientRooms, Rooms, RoomMessage, Tx, WebSocketMessage, JoinRoomMessage, SendMessageData, UserClients
 };
 use crate::websocket::MessageType;
+
+async fn handle_http_request(mut stream: TcpStream, addr: SocketAddr) {
+    // Read first bytes to get the request
+    let mut buffer = [0u8; 1024];
+    match stream.read(&mut buffer).await {
+        Ok(n) if n > 0 => {
+            let request = String::from_utf8_lossy(&buffer[..n.min(100)]);
+            if request.starts_with("GET") || request.starts_with("POST") || request.starts_with("HEAD") {
+                // It's an HTTP request, respond with a simple health check
+                let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 25\r\nConnection: close\r\n\r\n{\"status\":\"ok\"}\r\n";
+                if let Err(e) = stream.write_all(response.as_bytes()).await {
+                    println!("⚠️  Failed to write HTTP response to {}: {:?}", addr, e);
+                }
+                let _ = stream.shutdown().await;
+                println!("✅ Responded to HTTP health check from {}", addr);
+                return;
+            }
+        }
+        _ => {}
+    }
+    
+    // If we can't read or it's not HTTP, close the connection
+    let _ = stream.shutdown().await;
+}
 
 pub async fn handle_connection(
     stream: TcpStream,
@@ -25,9 +50,32 @@ pub async fn handle_connection(
 ) {
     println!("Client connected: {}", addr);
     
-    let ws_stream = match accept_async(stream).await {
+    // Try to accept as WebSocket first - if it fails with WrongHttpMethod, handle as HTTP
+    let ws_stream = match accept_hdr_async(stream, |req: &Request, response| {
+        // Check if it's actually a WebSocket upgrade request
+        let is_websocket = req.headers().get("upgrade")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("websocket"))
+            .unwrap_or(false);
+        
+        if !is_websocket {
+            println!("ℹ️  HTTP request (not WebSocket) from {}: {} {}", addr, req.method(), req.uri());
+        } else {
+            println!("📥 WebSocket upgrade request from {}: {} {}", addr, req.method(), req.uri());
+        }
+        
+        Ok(response)
+    }).await {
         Ok(ws) => ws,
         Err(e) => {
+            // Check if it's an HTTP request (not a WebSocket upgrade)
+            let error_str = e.to_string();
+            if error_str.contains("WrongHttpMethod") || error_str.contains("HTTP method") {
+                println!("ℹ️  HTTP request received from {} (not WebSocket upgrade)", addr);
+                // We can't handle HTTP here since the stream was consumed
+                // The HTTP server on PORT should handle these
+                return;
+            }
             println!("❌ Failed WebSocket handshake from {}: {:?}", addr, e);
             return;
         }

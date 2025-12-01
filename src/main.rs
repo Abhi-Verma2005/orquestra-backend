@@ -37,59 +37,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load configuration
     let config = Config::from_env()?;
     
-    // Initialize services
-    let ws_port = std::env::var("WS_PORT")
+    // Use PORT for both HTTP and WebSocket (Render provides PORT automatically)
+    // If PORT not set (local dev), use WS_PORT or default to 8080
+    let port = std::env::var("PORT")
+        .or_else(|_| std::env::var("WS_PORT"))
         .unwrap_or_else(|_| "8080".to_string())
         .parse::<u16>()?;
     
     let orchestrator = OrchestratorService::new(config);
-    let websocket_server = WebSocketServer::new(ws_port, orchestrator);
+    let websocket_server = WebSocketServer::new(port, orchestrator);
     
     // Create HTTP server for health checks (Render needs this)
-    // Use PORT env var if set (Render provides this), otherwise use WS_PORT + 1 to avoid conflict
-    let http_port = if std::env::var("PORT").is_ok() {
-        std::env::var("PORT")?.parse::<u16>()?
-    } else {
-        // If PORT not set, use WS_PORT + 1 to avoid conflict
-        ws_port + 1
-    };
+    let app = Router::new()
+        .route("/health", get(health_check))
+        .route("/", get(health_check));
     
-    // Only start HTTP server if it's on a different port
-    if http_port != ws_port {
-        let app = Router::new()
-            .route("/health", get(health_check))
-            .route("/", get(health_check));
-        
-        let http_addr = format!("0.0.0.0:{}", http_port);
-        println!("🌐 HTTP health check server listening on: {}", http_addr);
-        
-        let listener = tokio::net::TcpListener::bind(&http_addr).await?;
-        let http_server = axum::serve(listener, app);
-        
-        // Start both servers concurrently
-        tokio::select! {
-            result = websocket_server.run() => {
-                println!("WebSocket server stopped: {:?}", result);
-            }
-            result = http_server => {
-                println!("HTTP server stopped: {:?}", result);
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!("Shutting down gracefully...");
-            }
+    let http_addr = format!("0.0.0.0:{}", port);
+    println!("🌐 HTTP health check server listening on: {}", http_addr);
+    
+    let listener = tokio::net::TcpListener::bind(&http_addr).await?;
+    let http_server = axum::serve(listener, app);
+    
+    // Start both servers concurrently
+    tokio::select! {
+        result = websocket_server.run() => {
+            println!("WebSocket server stopped: {:?}", result);
         }
-    } else {
-        // If same port, only run WebSocket server
-        // Note: In this case, Render health checks to WS port will fail
-        // but WebSocket connections will work
-        println!("⚠️  HTTP and WebSocket using same port - health checks may fail");
-        tokio::select! {
-            result = websocket_server.run() => {
-                println!("WebSocket server stopped: {:?}", result);
-            }
-            _ = tokio::signal::ctrl_c() => {
-                println!("Shutting down gracefully...");
-            }
+        result = http_server => {
+            println!("HTTP server stopped: {:?}", result);
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("Shutting down gracefully...");
         }
     }
     
