@@ -1,6 +1,9 @@
 use std::vec;
 use serde::{Deserialize, Serialize};
-use crate::llm_provider::{functions::{self, intent_classifier, plan_todos_function, weather_function}, traits::{LlmConfig, LlmError, LlmProvider, LlmResponse}};
+use crate::llm_provider::{
+    functions::{self, intent_classifier, plan_todos_function, weather_function},
+    traits::{LlmConfig, LlmError, LlmProvider, LlmResponse},
+};
 
 // Supported Gemini models
 #[derive(Debug, Clone, PartialEq)]
@@ -263,6 +266,28 @@ pub async fn call_gemini_api(
 
     // Handle both text and function call responses
     Ok(gemini_response)
+}
+
+/// Convenience helper to get plain text from Gemini without tools.
+/// This mirrors the OpenAI `call_openai_api` helper and is suitable for
+/// simple chat-style prompts where only the first text candidate is needed.
+pub async fn call_gemini_text(
+    prompt: &str,
+    model: GeminiModel,
+    api_key: &str,
+) -> Result<String, LlmError> {
+    let response = call_gemini_api(prompt, model, api_key, false).await?;
+
+    let text = response
+        .candidates
+        .first()
+        .and_then(|candidate| candidate.content.parts.first())
+        .and_then(|part| part.text.clone())
+        .ok_or_else(|| {
+            LlmError::InvalidResponse("No text content in Gemini response".to_string())
+        })?;
+
+    Ok(text)
 }
 
 // In gemini.rs, add this new function

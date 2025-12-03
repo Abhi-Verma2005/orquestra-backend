@@ -1,7 +1,7 @@
 // src/websocket/handler.rs
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{SystemTime, UNIX_EPOCH, Duration};
 use serde_json::json;
 use tokio::net::TcpStream;
 use tokio::sync::broadcast;
@@ -10,7 +10,7 @@ use tokio_tungstenite::{accept_hdr_async, tungstenite::{Message, handshake::serv
 use futures_util::{SinkExt, StreamExt};
 use crate::orchestrator::service::OrchestratorService;
 use crate::websocket::protocol::{
-    Clients, ClientRooms, Rooms, RoomMessage, Tx, WebSocketMessage, JoinRoomMessage, SendMessageData, UserClients
+    Clients, ClientRooms, Rooms, RoomMessage, Tx, WebSocketMessage, JoinRoomMessage, SendMessageData, UserClients, WalletClients, WalletAddresses
 };
 use crate::websocket::MessageType;
 
@@ -46,6 +46,7 @@ pub async fn handle_connection(
     rooms: Rooms,
     client_rooms: ClientRooms,
     user_clients: UserClients,
+    wallet_clients: WalletClients,
     orchestrator: Arc<OrchestratorService>,
 ) {
     println!("Client connected: {}", addr);
@@ -113,17 +114,30 @@ pub async fn handle_connection(
     let addr_for_tx = addr.clone();
     let tx_task = tokio::spawn(async move {
         while let Ok(msg) = rx.recv().await {
-            // Serialize the entire message as JSON
-            if let Ok(json_str) = serde_json::to_string(&msg) {
-                println!("📤 [{}] Broadcasting message to client: {}", addr_for_tx, json_str);
+            // Check if this is a direct WebSocket message (for streaming events)
+            if msg.room_id == "__websocket_message__" && msg.payload.name == Some("__ws_direct__".to_string()) {
+                // Send the WebSocketMessage JSON directly (content contains the WebSocketMessage JSON)
+                let json_str = msg.payload.content;
+                println!("📤 [{}] Sending direct WebSocket message: {}", addr_for_tx, json_str.chars().take(100).collect::<String>());
                 if ws_sender_clone.send(Message::Text(json_str)).await.is_err() {
-                    println!("❌ [{}] Failed to send broadcast message, closing connection", addr_for_tx);
+                    println!("❌ [{}] Failed to send direct WebSocket message, closing connection", addr_for_tx);
                     break;
                 } else {
-                    println!("✅ [{}] Broadcast message sent successfully", addr_for_tx);
+                    println!("✅ [{}] Direct WebSocket message sent successfully", addr_for_tx);
                 }
             } else {
-                println!("❌ [{}] Failed to serialize broadcast message", addr_for_tx);
+                // Regular RoomMessage - serialize as JSON
+                if let Ok(json_str) = serde_json::to_string(&msg) {
+                    println!("📤 [{}] Broadcasting RoomMessage to client: {}", addr_for_tx, json_str.chars().take(100).collect::<String>());
+                    if ws_sender_clone.send(Message::Text(json_str)).await.is_err() {
+                        println!("❌ [{}] Failed to send broadcast message, closing connection", addr_for_tx);
+                        break;
+                    } else {
+                        println!("✅ [{}] Broadcast message sent successfully", addr_for_tx);
+                    }
+                } else {
+                    println!("❌ [{}] Failed to serialize broadcast message", addr_for_tx);
+                }
             }
         }
     });
@@ -134,6 +148,7 @@ pub async fn handle_connection(
     let rooms_clone = rooms.clone();
     let client_rooms_clone = client_rooms.clone();
     let user_clients_clone = user_clients.clone();
+    let wallet_clients_clone = wallet_clients.clone();
     let orchestrator_clone = orchestrator.clone();
     
     // Process incoming messages (not spawned - handles Send issue)
@@ -151,6 +166,7 @@ pub async fn handle_connection(
                             rooms_clone.clone(),
                             client_rooms_clone.clone(),
                             user_clients_clone.clone(),
+                            wallet_clients_clone.clone(),
                             orchestrator_clone.clone(),
                         ).await;
                     }
@@ -187,7 +203,7 @@ pub async fn handle_connection(
     tx_task.abort();
     
     // Cleanup on disconnect
-    cleanup_client(addr, clients, rooms, client_rooms, user_clients).await;
+    cleanup_client(addr, clients, rooms, client_rooms, user_clients, wallet_clients).await;
     println!("Client disconnected: {}", addr);
 }
 
@@ -198,6 +214,7 @@ async fn handle_websocket_message(
     rooms: Rooms,
     client_rooms: ClientRooms,
     user_clients: UserClients,
+    wallet_clients: WalletClients,
     orchestrator: Arc<OrchestratorService>,
 ) {
     println!("🔍 [{}] Handling message type: {:?}", addr, message.message_type);
@@ -239,7 +256,17 @@ async fn handle_websocket_message(
                         user_clients_lock.insert(addr, user_id);
                     }
                     
-                    handle_chat_message(addr, send_data, clients.clone(), rooms.clone(), user_clients.clone(), orchestrator).await;
+                    // Store latest wallet addresses for this connection, if provided
+                    if let Some(wallet_addrs) = send_data.wallet_addresses.clone() {
+                        println!("💼 [{}] Wallet addresses received in payload: solana={:?}, ethereum={:?}", 
+                            addr, wallet_addrs.solana, wallet_addrs.ethereum);
+                        let mut wallet_clients_lock = wallet_clients.lock().await;
+                        wallet_clients_lock.insert(addr, wallet_addrs);
+                    } else {
+                        println!("⚠️ [{}] No wallet addresses in message payload", addr);
+                    }
+                    
+                    handle_chat_message(addr, send_data, clients.clone(), rooms.clone(), user_clients.clone(), wallet_clients.clone(), orchestrator).await;
                 }
                 Err(e) => {
                     println!("❌ [{}] Failed to parse ChatMessage payload: {} | Payload: {}", 
@@ -318,12 +345,105 @@ async fn join_room(
     }
 }
 
+async fn send_websocket_event_to_client(
+    addr: SocketAddr,
+    message_type: MessageType,
+    payload: serde_json::Value,
+    clients: &Clients,
+) {
+    let clients_lock = clients.lock().await;
+    if let Some(tx) = clients_lock.get(&addr) {
+        let ws_message = WebSocketMessage {
+            message_type,
+            payload,
+            timestamp: SystemTime::now().duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_millis() as i64,
+            message_id: format!("msg_{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis()),
+        };
+        let json_str = serde_json::to_string(&ws_message).unwrap();
+        // Send WebSocketMessage directly as a special RoomMessage that frontend can detect
+        // Frontend will check if content is a JSON WebSocketMessage and handle accordingly
+        let room_msg = RoomMessage {
+            room_id: "__websocket_message__".to_string(), // Special marker for direct WebSocket messages
+            payload: crate::models::ChatMessage {
+                role: crate::models::Role::System,
+                content: json_str,
+                name: Some("__ws_direct__".to_string()), // Marker to indicate this is a direct WebSocket message
+            },
+        };
+        let _ = tx.send(room_msg);
+    }
+}
+
+/// Stream a block of assistant text to all participants in a room using
+/// TextStream / TextStreamEnd events understood by the frontend.
+async fn stream_text_to_room(
+    room_id: &str,
+    text: &str,
+    clients: &Clients,
+    rooms: &Rooms,
+) {
+    // Get a snapshot of participants in this room
+    let participant_addrs: Vec<SocketAddr> = {
+        let rooms_lock = rooms.lock().await;
+        if let Some(set) = rooms_lock.get(room_id) {
+            set.iter().cloned().collect()
+        } else {
+            return;
+        }
+    };
+
+    if participant_addrs.is_empty() || text.is_empty() {
+        return;
+    }
+
+    // Word-based chunking (5 words at a time, matching TypeScript implementation)
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let chunk_size = 5;
+    let total_words = words.len();
+
+    for i in (0..total_words).step_by(chunk_size) {
+        let end = (i + chunk_size).min(total_words);
+        let chunk_words = &words[i..end];
+        let chunk = chunk_words.join(" ") + if end < total_words { " " } else { "" };
+
+        for addr in &participant_addrs {
+            send_websocket_event_to_client(
+                *addr,
+                MessageType::TextStream,
+                serde_json::json!({ 
+                    "text": chunk,
+                    "isComplete": end >= total_words
+                }),
+                clients,
+            )
+            .await;
+        }
+
+        // 50ms delay between chunks (matching TypeScript implementation)
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Send final TextStreamEnd event with full text for each participant
+    for addr in &participant_addrs {
+        send_websocket_event_to_client(
+            *addr,
+            MessageType::TextStreamEnd,
+            serde_json::json!({ "text": text }),
+            clients,
+        )
+        .await;
+    }
+}
+
 async fn handle_chat_message(
     addr: SocketAddr,
     chat_data: SendMessageData,
     clients: Clients,
     rooms: Rooms,
     user_clients: UserClients,
+    wallet_clients: WalletClients,
     orchestrator: Arc<OrchestratorService>,
 ) {
     println!("🤖 [{}] Processing chat message for room: {}", addr, chat_data.chat_id);
@@ -382,25 +502,250 @@ async fn handle_chat_message(
         
         // Create message for AI with cleaned content
         let mut ai_message = chat_data.message.payload.clone();
-        ai_message.content = final_content;
+        ai_message.content = final_content.clone();
     
-    // Process the message through the orchestrator
-        println!("🔄 [{}] Sending message to orchestrator (AI mode)...", addr);
-        match orchestrator.process_chat_message(&ai_message).await {
-        Ok(ai_response) => {
-            println!("✅ [{}] Orchestrator returned response: {}", addr, ai_response.content);
-            
-            // Broadcast the AI response to all participants in the room
-                broadcast_to_room(
-                    &chat_data.chat_id,
-                    ai_response,
-                    clients.clone(),
-                    rooms.clone(),
-                ).await;
+        // Phase 1: Intent Detection
+        println!("🔍 [{}] Phase 1: Detecting wallet intent...", addr);
+        match orchestrator.detect_wallet_intent(&final_content).await {
+            Ok(needs_wallet_tool) => {
+                if needs_wallet_tool {
+                    println!("✅ [{}] Wallet intent detected - checking for connected wallets", addr);
+                    
+                    // Check for connected wallet addresses - prioritize current message payload, fallback to stored
+                    let wallet_addresses = if let Some(addrs) = chat_data.wallet_addresses.clone() {
+                        println!("💼 [{}] Using wallet addresses from current message payload: solana={:?}, ethereum={:?}", 
+                            addr, addrs.solana, addrs.ethereum);
+                        // Use addresses from current message payload (most reliable, especially for first message)
+                        Some(addrs)
+                    } else {
+                        // Fallback to stored wallet addresses if not in current message
+                        let wallet_clients_lock = wallet_clients.lock().await;
+                        let stored = wallet_clients_lock.get(&addr).cloned();
+                        if let Some(ref addrs) = stored {
+                            println!("💼 [{}] Using stored wallet addresses: solana={:?}, ethereum={:?}", 
+                                addr, addrs.solana, addrs.ethereum);
+                        } else {
+                            println!("⚠️ [{}] No wallet addresses found in payload or stored", addr);
+                        }
+                        stored
+                    };
+                    
+                    if let Some(addresses) = wallet_addresses {
+                        // STEP 1: Send FunctionCall message IMMEDIATELY (before execution)
+                        // This shows the tool call UI right away
+                        let function_name = "fetchWalletBalance";
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCall,
+                            serde_json::json!({
+                                "name": function_name,
+                                "args": {
+                                    "solana": addresses.solana.clone(),
+                                    "ethereum": addresses.ethereum.clone()
+                                },
+                                "role": "function"
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // STEP 2: Stream any reasoning text FIRST (if we had any from AI)
+                        // For now, we'll skip this since intent detection is separate
+                        // In future, this will come from AI response with function calling
+                        
+                        // STEP 3: Send FunctionCallStart - tool execution starting
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCallStart,
+                            serde_json::json!({
+                                "name": function_name
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        let mut portfolios = Vec::new();
+                        let mut tool_results = String::new();
+                        
+                        // STEP 4: Execute function
+                        // Fetch Solana portfolio if address exists
+                        if let Some(solana_addr) = &addresses.solana {
+                            println!("💰 [{}] Fetching Solana portfolio for: {}", addr, solana_addr);
+                            match crate::tools::wallet::fetch_solana_balance(
+                                orchestrator.get_solana_client(),
+                                solana_addr,
+                            ).await {
+                                Ok(portfolio) => {
+                                    println!("✅ [{}] Successfully fetched Solana portfolio", addr);
+                                    let portfolio_json = serde_json::to_value(&portfolio).unwrap_or_default();
+                                    portfolios.push(("solana".to_string(), portfolio_json.clone()));
+                                    tool_results.push_str(&format!("Solana: {} SOL worth ${:.2}\n", 
+                                        portfolio.native_balance, portfolio.native_value_usd));
+                                    
+                                    // Send wallet data event
+                                    send_websocket_event_to_client(
+                                        addr,
+                                        MessageType::WalletData,
+                                        serde_json::json!({
+                                            "chain": "solana",
+                                            "data": portfolio_json
+                                        }),
+                                        &clients,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ [{}] Failed to fetch Solana portfolio: {}", addr, e);
+                                    tool_results.push_str(&format!("Solana: Error - {}\n", e));
+                                }
+                            }
+                        }
+                        
+                        // Fetch Ethereum portfolio if address exists
+                        if let Some(ethereum_addr) = &addresses.ethereum {
+                            println!("💰 [{}] Fetching Ethereum portfolio for: {}", addr, ethereum_addr);
+                            match crate::tools::wallet::fetch_ethereum_balance(
+                                orchestrator.get_ethereum_client(),
+                                ethereum_addr,
+                            ).await {
+                                Ok(portfolio) => {
+                                    println!("✅ [{}] Successfully fetched Ethereum portfolio", addr);
+                                    let portfolio_json = serde_json::to_value(&portfolio).unwrap_or_default();
+                                    portfolios.push(("ethereum".to_string(), portfolio_json.clone()));
+                                    tool_results.push_str(&format!("Ethereum: {} ETH worth ${:.2}\n", 
+                                        portfolio.native_balance, portfolio.native_value_usd));
+                                    
+                                    // Send wallet data event
+                                    send_websocket_event_to_client(
+                                        addr,
+                                        MessageType::WalletData,
+                                        serde_json::json!({
+                                            "chain": "ethereum",
+                                            "data": portfolio_json
+                                        }),
+                                        &clients,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ [{}] Failed to fetch Ethereum portfolio: {}", addr, e);
+                                    tool_results.push_str(&format!("Ethereum: Error - {}\n", e));
+                                }
+                            }
+                        }
+                        
+                        // STEP 5: Send FunctionCallEnd - tool execution finished
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCallEnd,
+                            serde_json::json!({
+                                "name": function_name
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // STEP 6: Send FunctionResult with tool results
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionResult,
+                            serde_json::json!({
+                                "name": function_name,
+                                "result": {
+                                    "portfolios": portfolios,
+                                    "summary": tool_results
+                                },
+                                "role": "function"
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // Send open sidebar event if we have any portfolio data
+                        if !portfolios.is_empty() {
+                            send_websocket_event_to_client(
+                                addr,
+                                MessageType::OpenSidebar,
+                                serde_json::json!({
+                                    "message": "Opening sidebar to display wallet data"
+                                }),
+                                &clients,
+                            ).await;
+                            
+                            // STEP 7: Stream final summary
+                            println!("💬 [{}] Phase 2: Generating acknowledgment...", addr);
+                            match orchestrator.generate_acknowledgment(&final_content, &tool_results).await {
+                                Ok(ack_message) => {
+                                    println!("✅ [{}] Generated acknowledgment: {}", addr, ack_message);
+                                    stream_text_to_room(
+                                        &chat_data.chat_id,
+                                        &ack_message,
+                                        &clients,
+                                        &rooms,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("❌ [{}] Failed to generate acknowledgment: {}", addr, e);
+                                    let fallback = "I've retrieved your wallet balance information. Check the sidebar for details.".to_string();
+                                    stream_text_to_room(
+                                        &chat_data.chat_id,
+                                        &fallback,
+                                        &clients,
+                                        &rooms,
+                                    ).await;
+                                }
+                            }
+                        } else {
+                            // No wallets connected
+                            let no_wallet_response = "I can help you check your wallet balances, but I don't see any connected wallets. Please connect your wallet first.".to_string();
+                            stream_text_to_room(
+                                &chat_data.chat_id,
+                                &no_wallet_response,
+                                &clients,
+                                &rooms,
+                            ).await;
+                        }
+                    } else {
+                        // No wallet addresses found
+                        println!("⚠️ [{}] Wallet intent detected but no wallet addresses found", addr);
+                        let no_wallet_response = "I can help you check your wallet balances, but I don't see any connected wallets. Please connect your wallet first.".to_string();
+                        stream_text_to_room(
+                            &chat_data.chat_id,
+                            &no_wallet_response,
+                            &clients,
+                            &rooms,
+                        ).await;
+                    }
+                } else {
+                    // No wallet intent - normal flow
+                    println!("📝 [{}] No wallet intent detected - using normal AI flow with streaming", addr);
+                    match orchestrator.process_chat_message(&ai_message).await {
+                        Ok(ai_response) => {
+                            println!("✅ [{}] Orchestrator returned response: {}", addr, ai_response.content);
+                            stream_text_to_room(
+                                &chat_data.chat_id,
+                                &ai_response.content,
+                                &clients,
+                                &rooms,
+                            ).await;
+                        }
+                        Err(e) => {
+                            eprintln!("❌ [{}] Error processing chat message: {}", addr, e);
+                            send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
+                        }
+                    }
+                }
             }
             Err(e) => {
-                eprintln!("❌ [{}] Error processing chat message: {}", addr, e);
-                send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
+                eprintln!("❌ [{}] Intent detection failed: {}", addr, e);
+                // Fallback to normal flow on intent detection failure (still using streaming)
+                match orchestrator.process_chat_message(&ai_message).await {
+                    Ok(ai_response) => {
+                        stream_text_to_room(
+                            &chat_data.chat_id,
+                            &ai_response.content,
+                            &clients,
+                            &rooms,
+                        ).await;
+                    }
+                    Err(err) => {
+                        send_error_message(addr, &chat_data.chat_id, &err, clients, rooms).await;
+                    }
+                }
             }
         }
     } else if is_group_chat {
@@ -535,6 +880,7 @@ async fn cleanup_client(
     rooms: Rooms,
     client_rooms: ClientRooms,
     user_clients: UserClients,
+    wallet_clients: WalletClients,
 ) {
     // Get user_id before removing
     let user_id = {
@@ -550,6 +896,11 @@ async fn cleanup_client(
     {
         let mut user_clients_lock = user_clients.lock().await;
         user_clients_lock.remove(&addr);
+    }
+
+    {
+        let mut wallet_clients_lock = wallet_clients.lock().await;
+        wallet_clients_lock.remove(&addr);
     }
 
     {

@@ -25,6 +25,8 @@ pub struct SendMessageData {
     pub is_ai_message: Option<bool>, // Frontend can hint, but backend will verify
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_group_chat: Option<bool>, // Tell backend if this is a group chat
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wallet_addresses: Option<WalletAddresses>, // Optional wallet addresses from frontend
 }
 
 
@@ -45,8 +47,16 @@ pub enum MessageType {
     MessageReceived,
     #[serde(rename = "message_error")]
     MessageError,
+    #[serde(rename = "text_stream")]
+    TextStream,
+    #[serde(rename = "text_stream_end")]
+    TextStreamEnd,
     #[serde(rename = "function_call")]
     FunctionCall,
+    #[serde(rename = "function_call_start")]
+    FunctionCallStart,
+    #[serde(rename = "function_call_end")]
+    FunctionCallEnd,
     #[serde(rename = "function_result")]
     FunctionResult,
     #[serde(rename = "function_error")]
@@ -73,6 +83,12 @@ pub enum MessageType {
     UserJoined, // Notification when user joins
     #[serde(rename = "user_left")]
     UserLeft, // Notification when user leaves
+    #[serde(rename = "open_sidebar")]
+    OpenSidebar, // Open the sidebar panel
+    #[serde(rename = "wallet_data")]
+    WalletData, // Send portfolio data
+    #[serde(rename = "intent_detected")]
+    IntentDetected, // Indicate intent detection result
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -108,3 +124,12 @@ pub type Clients = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
 pub type ClientRooms = Arc<Mutex<HashMap<SocketAddr, HashSet<String>>>>;
 pub type Rooms = Arc<Mutex<HashMap<String, HashSet<SocketAddr>>>>;
 pub type UserClients = Arc<Mutex<HashMap<SocketAddr, String>>>; // Maps SocketAddr -> user_id
+
+// Wallet address storage
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
+pub struct WalletAddresses {
+    pub solana: Option<String>,
+    pub ethereum: Option<String>,
+}
+
+pub type WalletClients = Arc<Mutex<HashMap<SocketAddr, WalletAddresses>>>; // Maps SocketAddr -> wallet addresses

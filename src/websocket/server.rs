@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::Arc};
 use tokio::{net::TcpListener, sync::{broadcast, Mutex}};
-use crate::websocket::{handler::handle_connection, protocol::{ClientRooms, Clients, RoomMessage, Rooms, Tx, UserClients}};
+use crate::websocket::{handler::handle_connection, protocol::{ClientRooms, Clients, RoomMessage, Rooms, Tx, UserClients, WalletClients}};
 use crate::orchestrator::service::OrchestratorService;
 
 pub struct WebSocketServer {
@@ -9,6 +9,7 @@ pub struct WebSocketServer {
     rooms: Rooms,
     client_rooms: ClientRooms,
     user_clients: UserClients,
+    wallet_clients: WalletClients,
     tx: Tx,
     orchestrator: Arc<OrchestratorService>,
 }
@@ -20,6 +21,7 @@ impl WebSocketServer {
         let rooms = Arc::new(Mutex::new(HashMap::new()));
         let client_rooms = Arc::new(Mutex::new(HashMap::new()));
         let user_clients = Arc::new(Mutex::new(HashMap::new()));
+        let wallet_clients = Arc::new(Mutex::new(HashMap::new()));
 
         Self {
             port,
@@ -27,6 +29,7 @@ impl WebSocketServer {
             rooms,
             client_rooms,
             user_clients,
+            wallet_clients,
             tx,
             orchestrator: Arc::new(orchestrator),
         }
@@ -48,6 +51,7 @@ impl WebSocketServer {
             let client_rooms_clone = self.client_rooms.clone();
             let rooms_clone = self.rooms.clone();
             let user_clients_clone = self.user_clients.clone();
+            let wallet_clients_clone = self.wallet_clients.clone();
             let orchestrator_clone = self.orchestrator.clone();
 
             tokio::spawn(handle_connection(
@@ -58,6 +62,7 @@ impl WebSocketServer {
                 rooms_clone,
                 client_rooms_clone,
                 user_clients_clone,
+                wallet_clients_clone,
                 orchestrator_clone,
             ));
         }

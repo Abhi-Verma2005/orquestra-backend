@@ -5,7 +5,8 @@ use dotenvy;
 #[derive(Debug, Clone)]
 pub struct Config {
     pub gemini_api_key: String,
-    pub openai_api_key: String,
+    pub solana_rpc_url: String,
+    pub ethereum_rpc_url: String,
 }
 
 impl Config {
@@ -15,8 +16,10 @@ impl Config {
         
         Ok(Config {
             gemini_api_key: env::var("GOOGLE_GENERATIVE_AI_API_KEY").unwrap_or_default(),
-            openai_api_key: env::var("OPENAI_API_KEY")
-                .expect("OPENAI_API_KEY environment variable is required")
+            solana_rpc_url: env::var("SOLANA_RPC_URL")
+                .unwrap_or_else(|_| "https://api.mainnet-beta.solana.com".to_string()),
+            ethereum_rpc_url: env::var("ETHEREUM_RPC_URL")
+                .unwrap_or_else(|_| "https://eth.llamarpc.com".to_string()),
         })
     }
 }

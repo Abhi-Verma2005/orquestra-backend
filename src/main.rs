@@ -16,6 +16,8 @@ pub mod websocket;
 pub mod persistence;
 pub mod permissions;
 pub mod utils;
+pub mod types;
+pub mod services;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
