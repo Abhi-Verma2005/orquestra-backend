@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::sync::{broadcast, Mutex};
+use tokio::sync::{broadcast, mpsc, Mutex};
 
 use crate::models::ChatMessage;
 
@@ -13,6 +13,8 @@ pub struct JoinRoomMessage {
     pub chat_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub user_name: Option<String>, // User's name or email for display
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -118,12 +120,21 @@ pub struct ChatMember {
 }
 
 // Type aliases for WebSocket state management
+// Use mpsc channels for per-client messaging (not broadcast) - each client gets its own channel
+pub type ClientTx = mpsc::Sender<RoomMessage>;
+pub type Clients = Arc<Mutex<HashMap<SocketAddr, ClientTx>>>;
+// Keep Tx for backward compatibility (used in server.rs for now, will remove)
 pub type Tx = broadcast::Sender<RoomMessage>;
 pub type _Rx = broadcast::Receiver<RoomMessage>;
-pub type Clients = Arc<Mutex<HashMap<SocketAddr, Tx>>>;
 pub type ClientRooms = Arc<Mutex<HashMap<SocketAddr, HashSet<String>>>>;
 pub type Rooms = Arc<Mutex<HashMap<String, HashSet<SocketAddr>>>>;
 pub type UserClients = Arc<Mutex<HashMap<SocketAddr, String>>>; // Maps SocketAddr -> user_id
+
+// Track which user_ids have joined each room (to prevent duplicate join notifications)
+pub type RoomUserIds = Arc<Mutex<HashMap<String, HashSet<String>>>>; // Maps room_id -> Set<user_id>
+
+// Store user_id -> user_name mapping for displaying names in messages
+pub type UserNames = Arc<Mutex<HashMap<String, String>>>; // Maps user_id -> user_name
 
 // Wallet address storage
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

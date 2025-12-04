@@ -57,8 +57,6 @@ impl OrchestratorService {
 
     /// Detect if wallet tool call is needed based on user input
     pub async fn detect_wallet_intent(&self, user_input: &str) -> Result<bool, String> {
-        println!("🔍 [Orchestrator] Detecting wallet intent for: {}", user_input);
-        
         let intent_prompt = format!(
             r#"Analyze the following user query and determine if it requires fetching wallet balance or portfolio data from a blockchain (Solana or Ethereum).
 
@@ -75,12 +73,10 @@ Response:"#,
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
         ).await.map_err(|e| {
-            println!("❌ [Orchestrator] Intent detection API error: {:?}", e);
             format!("Intent detection error: {:?}", e)
         })?;
 
         let intent_needed = response.trim().to_lowercase().contains("yes");
-        println!("✅ [Orchestrator] Wallet intent detected: {}", intent_needed);
         
         Ok(intent_needed)
     }
@@ -91,8 +87,6 @@ Response:"#,
         user_query: &str,
         tool_results: &str,
     ) -> Result<String, String> {
-        println!("💬 [Orchestrator] Generating acknowledgment...");
-        
         let ack_prompt = format!(
             r#"The user asked: "{}"
 
@@ -109,38 +103,27 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
         ).await.map_err(|e| {
-            println!("❌ [Orchestrator] Acknowledgment API error: {:?}", e);
             format!("Acknowledgment error: {:?}", e)
         })?;
 
-        println!("✅ [Orchestrator] Generated acknowledgment");
         Ok(response)
     }
 
     /// Process user input and return AI response
     pub async fn process_message(&self, user_input: &str) -> Result<String, String> {
-        println!("🤖 [Orchestrator] Processing user input: {}", user_input);
-        
-        // Simple prompt - just send user input to AI
-        println!("📡 [Orchestrator] Calling Gemini API...");
         let response = call_gemini_text(
             user_input,
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
         ).await.map_err(|e| {
-            println!("❌ [Orchestrator] Gemini API error: {:?}", e);
             format!("Gemini API error: {:?}", e)
         })?;
 
-        println!("✅ [Orchestrator] Received response from Gemini API");
-        println!("📝 [Orchestrator] Response text ({} chars): {}", response.len(), response.chars().take(100).collect::<String>());
-        
         Ok(response)
     }
 
     /// Process chat message and return formatted response
     pub async fn process_chat_message(&self, chat_message: &ChatMessage) -> Result<ChatMessage, String> {
-        println!("💬 [Orchestrator] Processing chat message - Role: {:?}, Content: {}", chat_message.role, chat_message.content);
         let response_text = self.process_message(&chat_message.content).await?;
         
         let response = ChatMessage {
@@ -149,7 +132,6 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
             name: None,
         };
         
-        println!("✅ [Orchestrator] Created response message: {}", response.content.chars().take(100).collect::<String>());
         Ok(response)
     }
 
