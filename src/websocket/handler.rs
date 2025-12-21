@@ -8,7 +8,9 @@ use tokio::sync::{broadcast, mpsc};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_tungstenite::{accept_hdr_async, tungstenite::{Message, handshake::server::Request}};
 use futures_util::{SinkExt, StreamExt};
+use crate::models::{ChatMessage, Role};
 use crate::orchestrator::service::OrchestratorService;
+use crate::utils::gen_id::generate_id;
 use crate::websocket::protocol::{
     Clients, ClientRooms, Rooms, RoomMessage, Tx, ClientTx, WebSocketMessage, JoinRoomMessage, SendMessageData, UserClients, WalletClients, RoomUserIds, UserNames
 };
@@ -110,7 +112,7 @@ pub async fn handle_connection(
             if msg.room_id == "__websocket_message__" && msg.payload.name == Some("__ws_direct__".to_string()) {
                 // Send the WebSocketMessage JSON directly (content contains the WebSocketMessage JSON)
                 let json_str = msg.payload.content;
-                eprintln!("[RECEIVER {}] Forwarding direct event to client", addr_for_tx);
+                // eprintln!("[RECEIVER {}] Forwarding direct event to client", addr_for_tx);
                 if ws_sender_clone.send(Message::Text(json_str)).await.is_err() {
                     break;
                 }
@@ -128,15 +130,15 @@ pub async fn handle_connection(
                 if should_forward {
                     // Regular RoomMessage - serialize as JSON
                     if let Ok(json_str) = serde_json::to_string(&msg) {
-                        eprintln!("[RECEIVER {}] Forwarding message to client for room_id={}", addr_for_tx, msg.room_id);
+                        // eprintln!("[RECEIVER {}] Forwarding message to client for room_id={}", addr_for_tx, msg.room_id);
                         if ws_sender_clone.send(Message::Text(json_str)).await.is_err() {
                             break;
                         }
                     } else {
-                        eprintln!("[{}] Failed to serialize message", addr_for_tx);
+                        // eprintln!("[{}] Failed to serialize message", addr_for_tx);
                     }
                 } else {
-                    eprintln!("[RECEIVER {}] NOT forwarding message - client not in room_id={}", addr_for_tx, msg.room_id);
+                    // eprintln!("[RECEIVER {}] NOT forwarding message - client not in room_id={}", addr_for_tx, msg.room_id);
                 }
             }
         }
@@ -281,7 +283,7 @@ async fn join_room(
         user_clients_lock.get(&addr).cloned()
     };
     
-    eprintln!("[JOIN_ROOM] Socket {} joining room_id={}, user_id={:?}", addr, room_id, user_id);
+    // eprintln!("[JOIN_ROOM] Socket {} joining room_id={}, user_id={:?}", addr, room_id, user_id);
     
     {
         let mut rooms_lock = rooms.lock().await;
@@ -291,7 +293,7 @@ async fn join_room(
         entry.insert(addr);
         let room_size_after = entry.len();
         
-        eprintln!("[JOIN_ROOM] Room {} now has {} participants (was {})", room_id, room_size_after, room_size_before);
+        // eprintln!("[JOIN_ROOM] Room {} now has {} participants (was {})", room_id, room_size_after, room_size_before);
         
         // Track user_ids per room to prevent duplicate notifications
         let mut room_user_ids_lock = room_user_ids.lock().await;
@@ -346,6 +348,7 @@ async fn join_room(
                 }) {
                     if let Some(participant_tx) = clients_lock.get(target_addr) {
                         let system_message = crate::models::ChatMessage {
+                            id: Some(generate_id(Role::System)),
                             role: crate::models::Role::System,
                             content: format!("{} joined the chat", display_name),
                             name: Some("system".to_string()),
@@ -382,8 +385,8 @@ async fn join_room(
         let was_in_room = entry.contains(&room_id);
         entry.insert(room_id.clone());
         let client_rooms_list: Vec<String> = entry.iter().cloned().collect();
-        eprintln!("[JOIN_ROOM] Socket {} client_rooms updated: {:?} (was already in room: {})", 
-            addr, client_rooms_list, was_in_room);
+        // eprintln!("[JOIN_ROOM] Socket {} client_rooms updated: {:?} (was already in room: {})", 
+            // addr, client_rooms_list, was_in_room);
     }
 }
 
@@ -393,7 +396,7 @@ async fn send_websocket_event_to_client(
     payload: serde_json::Value,
     clients: &Clients,
 ) {
-    eprintln!("[SEND_EVENT] Sending event type={:?} to socket={}", message_type, addr);
+    // eprintln!("[SEND_EVENT] Sending event type={:?} to socket={}", message_type, addr);
     let clients_lock = clients.lock().await;
     if let Some(client_tx) = clients_lock.get(&addr) {
         let ws_message = WebSocketMessage {
@@ -410,20 +413,21 @@ async fn send_websocket_event_to_client(
         let room_msg = RoomMessage {
             room_id: "__websocket_message__".to_string(), // Special marker for direct WebSocket messages
             payload: crate::models::ChatMessage {
+                id: Some(generate_id(Role::System)),
                 role: crate::models::Role::System,
                 content: json_str,
                 name: Some("__ws_direct__".to_string()), // Marker to indicate this is a direct WebSocket message
             },
         };
-        eprintln!("[SEND_EVENT] Sending directly to client's mpsc channel");
+        // eprintln!("[SEND_EVENT] Sending directly to client's mpsc channel");
         let send_result = client_tx.send(room_msg).await;
-        if send_result.is_err() {
-            eprintln!("[SEND_EVENT] ERROR sending event to socket={}: {:?}", addr, send_result.err());
-        } else {
-            eprintln!("[SEND_EVENT] Successfully sent event to socket={}", addr);
-        }
+        // if send_result.is_err() {
+        //     // eprintln!("[SEND_EVENT] ERROR sending event to socket={}: {:?}", addr, send_result.err());
+        // } else {
+        //     // eprintln!("[SEND_EVENT] Successfully sent event to socket={}", addr);
+        // }
     } else {
-        eprintln!("[SEND_EVENT] WARNING: No client_tx found for socket={}", addr);
+        // eprintln!("[SEND_EVENT] WARNING: No client_tx found for socket={}", addr);
     }
 }
 
@@ -541,8 +545,8 @@ async fn handle_chat_message(
         clients_lock.len()
     };
     
-    eprintln!("[HANDLE_MSG] Received message from sender={}, user_id={:?}, room_id={}, total_connected_clients={}", 
-        addr, sender_user_id, chat_data.chat_id, total_connected_clients);
+    // eprintln!("[HANDLE_MSG] Received message from sender={}, user_id={:?}, room_id={}, total_connected_clients={}", 
+        // addr, sender_user_id, chat_data.chat_id, total_connected_clients);
     
     // STEP 1: Get room status and participants
     let (room_exists, _participant_details, unique_users_in_room) = {
@@ -570,19 +574,19 @@ async fn handle_chat_message(
             
             let total_unique_users = unique_users.union(&room_user_set).count();
             
-            eprintln!("[HANDLE_MSG] Room {} exists with {} participants (sockets), {} unique users", 
-                chat_data.chat_id, participants.len(), total_unique_users);
-            eprintln!("[HANDLE_MSG] Participants: {:?}", details);
+            // eprintln!("[HANDLE_MSG] Room {} exists with {} participants (sockets), {} unique users", 
+                // chat_data.chat_id, participants.len(), total_unique_users);
+            // eprintln!("[HANDLE_MSG] Participants: {:?}", details);
             
             (true, details, total_unique_users)
         } else {
-            eprintln!("[HANDLE_MSG] Room {} does NOT exist!", chat_data.chat_id);
+            // eprintln!("[HANDLE_MSG] Room {} does NOT exist!", chat_data.chat_id);
             (false, Vec::new(), 0)
         }
     };
     
     if !room_exists {
-        eprintln!("[HANDLE_MSG] Exiting early - room does not exist");
+        // eprintln!("[HANDLE_MSG] Exiting early - room does not exist");
         return;
     }
     
@@ -617,6 +621,8 @@ async fn handle_chat_message(
     // - If IS group chat: check for "@ai" prefix
     let has_ai_prefix = content.to_lowercase().starts_with("@ai");
     let should_route_to_ai = !is_group_chat || has_ai_prefix;
+
+    println!("Reached here {}", should_route_to_ai);
     
     if should_route_to_ai {
         // For group chats, broadcast the user's message first so everyone sees what was asked
@@ -626,6 +632,7 @@ async fn handle_chat_message(
                 .or_else(|| user_id.clone())
                 .unwrap_or_else(|| "Unknown".to_string());
             let user_message = crate::models::ChatMessage {
+                id: Some(generate_id(Role::User)),
                 role: crate::models::Role::User,
                 content: content.to_string(), // Original message with @ai prefix
                 name: Some(sender_id), // Preserve original name for frontend deduplication
@@ -898,7 +905,447 @@ async fn handle_chat_message(
             .or_else(|| user_id.clone())
             .unwrap_or_else(|| "Unknown".to_string());
         
+        let group_message = ChatMessage {
+            id: Some(generate_id(Role::User)),
+            role: Role::User,
+            content: content.to_string(),
+            name: Some(sender_id), // Preserve original name for frontend deduplication
+        };
+        
+        // Broadcast to all participants including sender (so everyone sees it in same order)
+        // CRITICAL: Only broadcast to users in this specific room
+        broadcast_to_room(
+            &chat_data.chat_id,
+            group_message,
+            clients.clone(),
+            rooms.clone(),
+            user_clients.clone(),
+            room_user_ids.clone(),
+            user_names.clone(),
+        ).await;
+        
+        // Also save the message to database immediately
+        // Note: Each client will also try to save, but this ensures it's saved at least once
+    } else {
+        // Not a group chat and no "@ai" prefix - this shouldn't happen with correct frontend logic
+        // But fallback: route to AI anyway (existing behavior)
+        let ai_message = chat_data.message.payload.clone();
+
+        // [TODO] unwrap here is unsafe make it safe 
+        match orchestrator.process_chat_message_orq(&ai_message).await {
+            Ok(ai_response) => {
+                broadcast_to_room(
+                    &chat_data.chat_id,
+                    ai_response,
+                    clients.clone(),
+                    rooms.clone(),
+                    user_clients.clone(),
+                    room_user_ids.clone(),
+                    user_names.clone(),
+                ).await;
+            }
+            Err(e) => {
+                eprintln!("[{}] Error processing chat message: {}", addr, e);
+                send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
+            }
+        }
+    }
+}
+
+// ====================== // Main Orquestration Logic // ======================== //
+
+async fn handle_chat_message_orq(
+    addr: SocketAddr,
+    chat_data: SendMessageData,
+    clients: Clients,
+    rooms: Rooms,
+    user_clients: UserClients,
+    wallet_clients: WalletClients,
+    room_user_ids: RoomUserIds,
+    user_names: UserNames,
+    orchestrator: Arc<OrchestratorService>,
+) {
+    // Get sender info
+    let sender_user_id = {
+        let user_clients_lock = user_clients.lock().await;
+        user_clients_lock.get(&addr).cloned()
+    };
+    
+    // Get total connected clients count
+    let total_connected_clients = {
+        let clients_lock = clients.lock().await;
+        clients_lock.len()
+    };
+    
+    // eprintln!("[HANDLE_MSG] Received message from sender={}, user_id={:?}, room_id={}, total_connected_clients={}", 
+        // addr, sender_user_id, chat_data.chat_id, total_connected_clients);
+    
+    // STEP 1: Get room status and participants
+    let (room_exists, _participant_details, unique_users_in_room) = {
+        let rooms_lock = rooms.lock().await;
+        let user_clients_lock = user_clients.lock().await;
+        let room_user_ids_lock = room_user_ids.lock().await;
+        
+        if let Some(participants) = rooms_lock.get(&chat_data.chat_id) {
+            // Build detailed participant info
+            let mut details: Vec<(SocketAddr, Option<String>)> = Vec::new();
+            for participant_addr in participants.iter() {
+                let user_id = user_clients_lock.get(participant_addr).cloned();
+                details.push((*participant_addr, user_id));
+            }
+            
+            // Get unique user_ids in this room
+            let unique_users: HashSet<String> = participants.iter()
+                .filter_map(|addr| user_clients_lock.get(addr).cloned())
+                .collect();
+            
+            // Also check room_user_ids for additional safety
+            let room_user_set = room_user_ids_lock.get(&chat_data.chat_id)
+                .map(|set| set.clone())
+                .unwrap_or_default();
+            
+            let total_unique_users = unique_users.union(&room_user_set).count();
+            
+            // eprintln!("[HANDLE_MSG] Room {} exists with {} participants (sockets), {} unique users", 
+            //     chat_data.chat_id, participants.len(), total_unique_users);
+            // eprintln!("[HANDLE_MSG] Participants: {:?}", details);
+            
+            (true, details, total_unique_users)
+        } else {
+            // eprintln!("[HANDLE_MSG] Room {} does NOT exist!", chat_data.chat_id);
+            (false, Vec::new(), 0)
+        }
+    };
+    
+    if !room_exists {
+        // eprintln!("[HANDLE_MSG] Exiting early - room does not exist");
+        return;
+    }
+    
+    // STEP 2: Get user_id for sender
+    let user_id = {
+        let user_clients_lock = user_clients.lock().await;
+        user_clients_lock.get(&addr).cloned()
+    };
+    
+    // STEP 3: Check if this is a group chat
+    let is_group_chat = chat_data.is_group_chat.unwrap_or(false);
+    
+    // CRITICAL VALIDATION: For individual chats (not group chats), ensure only one user is in the room
+    if !is_group_chat && unique_users_in_room > 1 {
+        let error_msg = format!("Error: This chat room has multiple users ({}), which is not allowed for individual chats. Please create a new chat.", unique_users_in_room);
+        send_error_message(addr, &chat_data.chat_id, &error_msg, clients.clone(), rooms.clone()).await;
+        return;
+    }
+    
+    // Get user_name for this user_id
+    let user_name = if let Some(ref uid) = user_id {
+        let user_names_lock = user_names.lock().await;
+        user_names_lock.get(uid).cloned()
+    } else {
+        None
+    };
+    
+    let content = chat_data.message.payload.content.trim();
+    
+    // Message routing logic:
+    // - If NOT group chat: route all messages to AI (existing behavior)
+    // - If IS group chat: check for "@ai" prefix
+    let has_ai_prefix = content.to_lowercase().starts_with("@ai");
+    let should_route_to_ai = !is_group_chat || has_ai_prefix;
+    
+    if should_route_to_ai {
+        // For group chats, broadcast the user's message first so everyone sees what was asked
+        if is_group_chat {
+            // Use the original message's name field if present (for deduplication), otherwise use user_id
+            let sender_id = chat_data.message.payload.name.clone()
+                .or_else(|| user_id.clone())
+                .unwrap_or_else(|| "Unknown".to_string());
+            let user_message = crate::models::ChatMessage {
+                id: Some(generate_id(Role::User)),
+                role: crate::models::Role::User,
+                content: content.to_string(), // Original message with @ai prefix
+                name: Some(sender_id), // Preserve original name for frontend deduplication
+            };
+            broadcast_to_room(
+                &chat_data.chat_id,
+                user_message,
+                clients.clone(),
+                rooms.clone(),
+                user_clients.clone(),
+                room_user_ids.clone(),
+                user_names.clone(),
+            ).await;
+        }
+        
+        // Remove "@ai" prefix (case-insensitive) and trim
+        let mut final_content = content
+            .trim_start()
+            .chars()
+            .skip_while(|c| c.is_whitespace())
+            .skip_while(|c| c.to_lowercase().to_string() == "@")
+            .skip_while(|c| c.to_lowercase().to_string() == "a" || c.to_lowercase().to_string() == "i")
+            .skip_while(|c| c.is_whitespace())
+            .collect::<String>()
+            .trim()
+            .to_string();
+        
+        // If content is empty after removing @ai, use a default message
+        if final_content.is_empty() {
+            final_content = "Hello".to_string();
+        }
+        
+        // Create message for AI with cleaned content
+        let mut ai_message = chat_data.message.payload.clone();
+        ai_message.content = final_content.clone();
+
+        // match orchestrator.process_chat_message(&ai_message).await {
+        //     Ok(response) => {
+                
+        //     }
+        //     Err(e) => {
+
+        //     }
+        // } 
+    
+        // Phase 1: Intent Detection
+        match orchestrator.detect_wallet_intent(&final_content).await {
+            Ok(needs_wallet_tool) => {
+                if needs_wallet_tool {
+                    // Check for connected wallet addresses - prioritize current message payload, fallback to stored
+                    let wallet_addresses = if let Some(addrs) = chat_data.wallet_addresses.clone() {
+                        // Use addresses from current message payload (most reliable, especially for first message)
+                        Some(addrs)
+                    } else {
+                        // Fallback to stored wallet addresses if not in current message
+                        let wallet_clients_lock = wallet_clients.lock().await;
+                        wallet_clients_lock.get(&addr).cloned()
+                    };
+                    
+                    if let Some(addresses) = wallet_addresses {
+                        // STEP 1: Send FunctionCall message IMMEDIATELY (before execution)
+                        // This shows the tool call UI right away
+                        let function_name = "fetchWalletBalance";
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCall,
+                            serde_json::json!({
+                                "name": function_name,
+                                "args": {
+                                    "solana": addresses.solana.clone(),
+                                    "ethereum": addresses.ethereum.clone()
+                                },
+                                "role": "function"
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // STEP 2: Stream any reasoning text FIRST (if we had any from AI)
+                        // For now, we'll skip this since intent detection is separate
+                        // In future, this will come from AI response with function calling
+                        
+                        // STEP 3: Send FunctionCallStart - tool execution starting
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCallStart,
+                            serde_json::json!({
+                                "name": function_name
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        let mut portfolios = Vec::new();
+                        let mut tool_results = String::new();
+                        
+                        // STEP 4: Execute function
+                        // Fetch Solana portfolio if address exists
+                        if let Some(solana_addr) = &addresses.solana {
+                            match crate::tools::wallet::fetch_solana_balance(
+                                orchestrator.get_solana_client(),
+                                solana_addr,
+                            ).await {
+                                Ok(portfolio) => {
+                                    let portfolio_json = serde_json::to_value(&portfolio).unwrap_or_default();
+                                    portfolios.push(("solana".to_string(), portfolio_json.clone()));
+                                    tool_results.push_str(&format!("Solana: {} SOL worth ${:.2}\n", 
+                                        portfolio.native_balance, portfolio.native_value_usd));
+                                    
+                                    // Send wallet data event
+                                    send_websocket_event_to_client(
+                                        addr,
+                                        MessageType::WalletData,
+                                        serde_json::json!({
+                                            "chain": "solana",
+                                            "data": portfolio_json
+                                        }),
+                                        &clients,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[{}] Failed to fetch Solana portfolio: {}", addr, e);
+                                    tool_results.push_str(&format!("Solana: Error - {}\n", e));
+                                }
+                            }
+                        }
+                        
+                        // Fetch Ethereum portfolio if address exists
+                        if let Some(ethereum_addr) = &addresses.ethereum {
+                            match crate::tools::wallet::fetch_ethereum_balance(
+                                orchestrator.get_ethereum_client(),
+                                ethereum_addr,
+                            ).await {
+                                Ok(portfolio) => {
+                                    let portfolio_json = serde_json::to_value(&portfolio).unwrap_or_default();
+                                    portfolios.push(("ethereum".to_string(), portfolio_json.clone()));
+                                    tool_results.push_str(&format!("Ethereum: {} ETH worth ${:.2}\n", 
+                                        portfolio.native_balance, portfolio.native_value_usd));
+                                    
+                                    // Send wallet data event
+                                    send_websocket_event_to_client(
+                                        addr,
+                                        MessageType::WalletData,
+                                        serde_json::json!({
+                                            "chain": "ethereum",
+                                            "data": portfolio_json
+                                        }),
+                                        &clients,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[{}] Failed to fetch Ethereum portfolio: {}", addr, e);
+                                    tool_results.push_str(&format!("Ethereum: Error - {}\n", e));
+                                }
+                            }
+                        }
+                        
+                        // STEP 5: Send FunctionCallEnd - tool execution finished
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionCallEnd,
+                            serde_json::json!({
+                                "name": function_name
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // STEP 6: Send FunctionResult with tool results
+                        send_websocket_event_to_client(
+                            addr,
+                            MessageType::FunctionResult,
+                            serde_json::json!({
+                                "name": function_name,
+                                "result": {
+                                    "portfolios": portfolios,
+                                    "summary": tool_results
+                                },
+                                "role": "function"
+                            }),
+                            &clients,
+                        ).await;
+                        
+                        // Send open sidebar event if we have any portfolio data
+                        if !portfolios.is_empty() {
+                            send_websocket_event_to_client(
+                                addr,
+                                MessageType::OpenSidebar,
+                                serde_json::json!({
+                                    "message": "Opening sidebar to display wallet data"
+                                }),
+                                &clients,
+                            ).await;
+                            
+                            // STEP 7: Stream final summary
+                            match orchestrator.generate_acknowledgment(&final_content, &tool_results).await {
+                                Ok(ack_message) => {
+                                    stream_text_to_room(
+                                        &chat_data.chat_id,
+                                        &ack_message,
+                                        &clients,
+                                        &rooms,
+                                        &user_clients,
+                                    ).await;
+                                }
+                                Err(e) => {
+                                    eprintln!("[{}] Failed to generate acknowledgment: {}", addr, e);
+                                    let fallback = "I've retrieved your wallet balance information. Check the sidebar for details.".to_string();
+                                    stream_text_to_room(
+                                        &chat_data.chat_id,
+                                        &fallback,
+                                        &clients,
+                                        &rooms,
+                                        &user_clients,
+                                    ).await;
+                                }
+                            }
+                        } else {
+                            // No wallets connected
+                            let no_wallet_response = "I can help you check your wallet balances, but I don't see any connected wallets. Please connect your wallet first.".to_string();
+                            stream_text_to_room(
+                                &chat_data.chat_id,
+                                &no_wallet_response,
+                                &clients,
+                                &rooms,
+                                &user_clients,
+                            ).await;
+                        }
+                    } else {
+                        // No wallet addresses found
+                        let no_wallet_response = "I can help you check your wallet balances, but I don't see any connected wallets. Please connect your wallet first.".to_string();
+                        stream_text_to_room(
+                            &chat_data.chat_id,
+                            &no_wallet_response,
+                            &clients,
+                            &rooms,
+                            &user_clients,
+                        ).await;
+                    }
+                } else {
+                    // No wallet intent - normal flow
+                    match orchestrator.process_chat_message(&ai_message).await {
+                        Ok(ai_response) => {
+                            stream_text_to_room(
+                                &chat_data.chat_id,
+                                &ai_response.content,
+                                &clients,
+                                &rooms,
+                                &user_clients,
+                            ).await;
+                        }
+                        Err(e) => {
+                            eprintln!("[{}] Error processing chat message: {}", addr, e);
+                            send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("[{}] Intent detection failed: {}", addr, e);
+                // Fallback to normal flow on intent detection failure (still using streaming)
+                match orchestrator.process_chat_message(&ai_message).await {
+                    Ok(ai_response) => {
+                        stream_text_to_room(
+                            &chat_data.chat_id,
+                            &ai_response.content,
+                            &clients,
+                            &rooms,
+                            &user_clients,
+                        ).await;
+                    }
+                    Err(err) => {
+                        send_error_message(addr, &chat_data.chat_id, &err, clients, rooms).await;
+                    }
+                }
+            }
+        }
+    } else if is_group_chat {
+        // Regular group message - broadcast to all participants (only if group chat)
+        // Use the original message's name field if present (for deduplication), otherwise use user_id
+        let sender_id = chat_data.message.payload.name.clone()
+            .or_else(|| user_id.clone())
+            .unwrap_or_else(|| "Unknown".to_string());
+        
         let group_message = crate::models::ChatMessage {
+            id: Some(generate_id(Role::User)),
             role: crate::models::Role::User,
             content: content.to_string(),
             name: Some(sender_id), // Preserve original name for frontend deduplication
@@ -1034,6 +1481,7 @@ async fn send_error_message(
     // Create error chat message with a unique identifier to prevent duplicates
     let error_content = format!("Error: {}", error_msg);
     let error_chat_message = crate::models::ChatMessage {
+        id: Some(generate_id(Role::Assistant)),
         role: crate::models::Role::Assistant,
         content: error_content.clone(),
         name: Some("system".to_string()),
@@ -1102,6 +1550,7 @@ async fn cleanup_client(
                         for participant_addr in participants.iter() {
                             if let Some(participant_tx) = clients_lock.get(participant_addr) {
                                 let system_message = crate::models::ChatMessage {
+                                    id: Some(generate_id(Role::System)),
                                     role: crate::models::Role::System,
                                     content: format!("User {} left the chat", uid),
                                     name: Some("system".to_string()),

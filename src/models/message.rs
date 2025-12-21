@@ -7,6 +7,8 @@ pub enum Role {
     User,
     Assistant,
     Function,  // Add this for function results
+    Data,
+    Tool
 }
 
 impl ToString for Role {
@@ -16,6 +18,8 @@ impl ToString for Role {
             Role::User => "user".to_string(),
             Role::Assistant => "assistant".to_string(),
             Role::Function => "function".to_string(),
+            Role::Data => "data".to_string(),
+            Role::Tool => "tool".to_string(),
         }
     }
 }
@@ -23,9 +27,11 @@ impl ToString for Role {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub role: Role,
     pub content: String,
-    pub name: Option<String>,  // For function names
+    pub name: Option<String>, // For function names
 }
 
 pub fn messages_to_prompt(messages: &Vec<ChatMessage>) -> String {

@@ -1,8 +1,8 @@
+use std::sync::Arc;
+
 // src/main.rs
 use crate::{
-    config::Config,
-    websocket::WebSocketServer,
-    orchestrator::service::OrchestratorService,
+    config::Config, db::{db::init_db, service::ChatDbService}, orchestrator::service::OrchestratorService, websocket::WebSocketServer
 };
 
 // Module declarations
@@ -18,6 +18,7 @@ pub mod permissions;
 pub mod utils;
 pub mod types;
 pub mod services;
+pub mod db;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -33,7 +34,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or_else(|_| "8080".to_string())
         .parse::<u16>()?;
     
-    let orchestrator = OrchestratorService::new(config);
+    let db = init_db().await;
+    let db = Arc::new(db);
+    let chat_db = ChatDbService::new(db.clone());
+    let orchestrator = OrchestratorService::new(config, chat_db);
     let websocket_server = WebSocketServer::new(port, orchestrator);
     
     // Start only the WebSocket server (it handles both WebSocket and HTTP health checks)

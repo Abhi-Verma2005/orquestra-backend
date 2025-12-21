@@ -11,6 +11,7 @@ pub enum GeminiModel {
     GeminiPro,
     GeminiLite,
     GeminiMed,
+    GeminiSuperLite,
     Custom(String), // For future model support
 }
 
@@ -37,9 +38,10 @@ struct Tool {
 impl GeminiModel {
     pub fn model_name(&self) -> String {
         match self {
-            GeminiModel::GeminiPro => "gemini-2.5-pro".to_string(),
+            GeminiModel::GeminiPro => "gemini-3-pro-preview".to_string(),
             GeminiModel::GeminiMed => "gemini-2.5-flash".to_string(),
-            GeminiModel::GeminiLite => "gemini-2.5-flash-lite".to_string(),
+            GeminiModel::GeminiLite => "gemini-3-flash-preview".to_string(),
+            GeminiModel::GeminiSuperLite => "gemini-2.5-flash-lite".to_string(),
             GeminiModel::Custom(name) => name.clone(),
         }
     }

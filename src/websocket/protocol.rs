@@ -5,7 +5,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 
-use crate::models::ChatMessage;
+use crate::models::{ChatMessage, Role};
 
 // WebSocket message types
 #[derive(Serialize, Deserialize, Debug)]
@@ -15,6 +15,13 @@ pub struct JoinRoomMessage {
     pub user_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user_name: Option<String>, // User's name or email for display
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub struct SdkMessage {
+    pub id: String,
+    pub role: Role,
+    pub content: String
 }
 
 #[derive(Serialize, Deserialize, Debug)]

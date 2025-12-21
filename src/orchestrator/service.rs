@@ -1,48 +1,48 @@
+use std::sync::Arc;
+
+use sqlx::PgPool;
+
 // src/orchestrator/service.rs
 use crate::{
-    config::Config,
-    llm_provider::gemini::{call_gemini_api, call_gemini_text, GeminiModel, GeminiResponse},
-    models::ChatMessage,
-    services::{
-        cache::CacheService,
-        price_service::PriceService,
-        metadata_service::MetadataService,
-        solana_client::SolanaClient,
-        ethereum_client::EthereumClient,
-    },
+    config::Config, db::service::ChatDbService, llm_provider::gemini::{GeminiModel, call_gemini_text}, models::{ChatMessage, Role}, services::{
+        cache::CacheService, ethereum_client::EthereumClient, metadata_service::MetadataService,
+        price_service::PriceService, solana_client::SolanaClient,
+    }, utils::gen_id::generate_id
 };
 
 pub struct OrchestratorService {
     config: Config,
     solana_client: SolanaClient,
     ethereum_client: EthereumClient,
+    chat_db: ChatDbService
 }
 
 impl OrchestratorService {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, chat_db: ChatDbService) -> Self {
         // Initialize blockchain services
         let cache = CacheService::new();
         let price_service = PriceService::new(cache.clone());
         let metadata_service = MetadataService::new(cache.clone());
-        
         let solana_client = SolanaClient::new(
+
             config.solana_rpc_url.clone(),
             price_service.clone(),
             metadata_service.clone(),
             config.clone(),
         );
-        
+
         let ethereum_client = EthereumClient::new(
             config.ethereum_rpc_url.clone(),
             price_service.clone(),
             metadata_service.clone(),
             config.clone(),
         );
-        
+
         Self {
             config,
             solana_client,
             ethereum_client,
+            chat_db
         }
     }
 
@@ -72,12 +72,12 @@ Response:"#,
             &intent_prompt,
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
-        ).await.map_err(|e| {
-            format!("Intent detection error: {:?}", e)
-        })?;
+        )
+        .await
+        .map_err(|e| format!("Intent detection error: {:?}", e))?;
 
         let intent_needed = response.trim().to_lowercase().contains("yes");
-        
+
         Ok(intent_needed)
     }
 
@@ -94,17 +94,16 @@ I fetched their wallet data. Here's what I found:
 {}
 
 Provide a brief, friendly acknowledgment summarizing what wallet data was retrieved and displayed to the user. Be concise (1-2 sentences)."#,
-            user_query,
-            tool_results
+            user_query, tool_results
         );
 
         let response = call_gemini_text(
             &ack_prompt,
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
-        ).await.map_err(|e| {
-            format!("Acknowledgment error: {:?}", e)
-        })?;
+        )
+        .await
+        .map_err(|e| format!("Acknowledgment error: {:?}", e))?;
 
         Ok(response)
     }
@@ -115,23 +114,27 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
             user_input,
             GeminiModel::GeminiLite,
             &self.config.gemini_api_key,
-        ).await.map_err(|e| {
-            format!("Gemini API error: {:?}", e)
-        })?;
+        )
+        .await
+        .map_err(|e| format!("Gemini API error: {:?}", e))?;
 
         Ok(response)
     }
 
     /// Process chat message and return formatted response
-    pub async fn process_chat_message(&self, chat_message: &ChatMessage) -> Result<ChatMessage, String> {
+    pub async fn process_chat_message(
+        &self,
+        chat_message: &ChatMessage,
+    ) -> Result<ChatMessage, String> {
         let response_text = self.process_message(&chat_message.content).await?;
-        
+
         let response = ChatMessage {
+            id: Some(generate_id(Role::Assistant)),
             role: crate::models::Role::Assistant,
             content: response_text.clone(),
             name: None,
         };
-        
+
         Ok(response)
     }
 
@@ -145,5 +148,62 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
         // This returns (text_response, function_name)
         let response_text = self.process_message(user_input).await?;
         Ok((Some(response_text), None))
+    }
+
+    pub async fn process_chat_message_orq(
+        &self,
+        chat_message: &ChatMessage
+    ) -> Result<ChatMessage, String> {
+        // 1. Build Context
+
+        let system_prompt = format!("You are a teaching assistant operating inside a strict step-based orchestration system.
+
+Topic: Integration
+
+You MUST follow this teaching flow exactly, step by step.
+You are currently on STEP {{CURRENT_STEP}}.
+
+Teaching Flow:
+STEP 1: Give a simple, intuitive introduction to the topic (no formulas, no depth).
+STEP 2: Do a deeper explanation with core ideas and reasoning.
+STEP 3: Provide a concise cheat sheet (key points, formulas, rules).
+STEP 4: Ask ONE basic conceptual question to test understanding.
+STEP 5: Stop. Do NOT continue further.
+
+Rules:
+- Execute ONLY the current step.
+- Do NOT mention future steps.
+- Do NOT repeat previous steps.
+- Do NOT advance steps on your own.
+- When you finish your step, output the exact token: <<STEP_DONE>>
+- Do NOT output <<STEP_DONE>> unless the step is fully completed.
+
+If the step is STEP 4, end by asking the question, then output <<STEP_DONE>>.
+
+You do not control flow. The system controls flow.
+
+
+- Chat History to which you have to answer the last message: chat_array
+
+
+");
+
+        // 2. Identify Current Status
+        // 3. Generate Response Based on next step and user query
+        println!("{:?}", system_prompt);
+
+        let response_text = self.process_message(&system_prompt).await?;
+
+        let response = ChatMessage {
+            id: Some(generate_id(Role::System)),
+            role: Role::Assistant,
+            content: response_text.clone(),
+            name: None,
+        };
+
+        Ok(response)
+        
+
+        
     }
 }
