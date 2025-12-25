@@ -1,0 +1,43 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO \"SessionState\" (\"chatId\", \"userId\", \"currentStep\", topic)\n            VALUES ($1, $2, $3, $4)\n            RETURNING \n                \"chatId\" AS \"chat_id!\",\n                \"userId\" AS \"user_id!\",\n                \"currentStep\" AS \"current_step!\",\n                topic\n            ",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "chat_id!",
+        "type_info": "Uuid"
+      },
+      {
+        "ordinal": 1,
+        "name": "user_id!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 2,
+        "name": "current_step!",
+        "type_info": "Varchar"
+      },
+      {
+        "ordinal": 3,
+        "name": "topic",
+        "type_info": "Varchar"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Varchar",
+        "Varchar"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "800c7d1cb6cf8612a0c6ee10c6e59bd7590426309bd1646ff9f220a4bf1663ba"
+}

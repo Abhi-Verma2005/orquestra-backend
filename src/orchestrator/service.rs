@@ -1,86 +1,110 @@
-use std::sync::Arc;
+use std::{collections::{hash_map::Entry, HashMap}, sync::Arc};
 
-use sqlx::PgPool;
+// use anyhow::{anyhow, Ok};
+use axum::http::header::{OccupiedEntry, VacantEntry};
+use tokio::sync::Mutex;
 
 // src/orchestrator/service.rs
 use crate::{
     config::Config, db::service::ChatDbService, llm_provider::gemini::{GeminiModel, call_gemini_text}, models::{ChatMessage, Role}, services::{
-        cache::CacheService, ethereum_client::EthereumClient, metadata_service::MetadataService,
-        price_service::PriceService, solana_client::SolanaClient,
+        cache::CacheService, metadata_service::MetadataService,
+        price_service::PriceService,
     }, utils::gen_id::generate_id
 };
 
+pub enum TeachingStep {
+    Introduction,
+    Explanation,
+    CheatSheet,
+    Question,
+    Done
+}
+
+impl From<String> for TeachingStep{
+    fn from(item: String) -> Self {
+        match item.as_str() {
+            "introduction" => TeachingStep::Introduction,
+            "explanation" => TeachingStep::Explanation,
+            "cheat_sheet" => TeachingStep::CheatSheet,
+            "question" => TeachingStep::Question,
+            "done" => TeachingStep::Done,
+            _ => TeachingStep::Introduction
+        }
+    }
+}
+
+pub struct SessionState {
+    pub chat_id: String,
+    pub user_id: String,
+    pub topic: String,
+    pub current_step: TeachingStep
+}
+
+impl SessionState{
+    pub fn new(chat_id: String, user_id: String, topic: String, current_step: Option<TeachingStep>) -> Self {
+        Self {
+            chat_id,
+            user_id,
+            topic,
+            current_step: current_step.unwrap_or_else(|| TeachingStep::Introduction)
+        }
+    }
+
+    // pub fn cloned() -> Self {
+    //     Self {
+    //         chat_id
+    //     }
+    // }
+}
+
+type SessionRegistry = Arc<Mutex<HashMap<String, Arc<Mutex<SessionState>>>>>;
+
 pub struct OrchestratorService {
     config: Config,
-    solana_client: SolanaClient,
-    ethereum_client: EthereumClient,
-    chat_db: ChatDbService
+    chat_db: ChatDbService,
+    pub session_registry: SessionRegistry
 }
 
 impl OrchestratorService {
     pub fn new(config: Config, chat_db: ChatDbService) -> Self {
         // Initialize blockchain services
         let cache = CacheService::new();
-        let price_service = PriceService::new(cache.clone());
-        let metadata_service = MetadataService::new(cache.clone());
-        let solana_client = SolanaClient::new(
-
-            config.solana_rpc_url.clone(),
-            price_service.clone(),
-            metadata_service.clone(),
-            config.clone(),
-        );
-
-        let ethereum_client = EthereumClient::new(
-            config.ethereum_rpc_url.clone(),
-            price_service.clone(),
-            metadata_service.clone(),
-            config.clone(),
-        );
+        let session_registry: SessionRegistry = Arc::new(Mutex::new(HashMap::new()));
 
         Self {
             config,
-            solana_client,
-            ethereum_client,
-            chat_db
+            chat_db,
+            session_registry
         }
     }
 
-    /// Get blockchain clients for tool execution
-    pub fn get_solana_client(&self) -> &SolanaClient {
-        &self.solana_client
+    pub async fn make_safe_entry(&self, chat_id: &String, user_id: &String) {
+        // 1. Check for cache
+        let mut guard = self.session_registry.lock().await;
+        guard.entry(chat_id.clone()).or_insert( {
+            // check for state in db
+            // if 
+            let result = self.chat_db.read_or_update_session_state(&chat_id, &user_id, "integration").await;
+            match result {
+                Ok(val) => {
+                    let current_step = TeachingStep::from(val.current_step);
+                    let session_entry = SessionState::new(chat_id.clone(), user_id.clone(), String::from("integration"), Some(current_step));
+                    Arc::new(Mutex::new(session_entry))
+                },
+                Err(e) => {
+                    eprintln!("Got error while reading and updating session state to db: {:?}", e);
+                    let session_entry = SessionState::new(chat_id.clone(), user_id.clone(), String::from("integration"), None);
+                    Arc::new(Mutex::new(session_entry))
+                }
+            }
+
+        });
+        // 2. No Cache ? Check DB
+        // 3. No DB state ? Probably a new chat hence create a new state and update cache and return it.
+        // 4. If DB state return
+        // 5. Cache exists early return
+        
     }
-
-    pub fn get_ethereum_client(&self) -> &EthereumClient {
-        &self.ethereum_client
-    }
-
-    /// Detect if wallet tool call is needed based on user input
-    pub async fn detect_wallet_intent(&self, user_input: &str) -> Result<bool, String> {
-        let intent_prompt = format!(
-            r#"Analyze the following user query and determine if it requires fetching wallet balance or portfolio data from a blockchain (Solana or Ethereum).
-
-User query: "{}"
-
-Respond with ONLY one word: "yes" if wallet data is needed (e.g., "show my balance", "what's in my wallet", "check my portfolio"), or "no" if it's a general question that doesn't require blockchain data.
-
-Response:"#,
-            user_input
-        );
-
-        let response = call_gemini_text(
-            &intent_prompt,
-            GeminiModel::GeminiLite,
-            &self.config.gemini_api_key,
-        )
-        .await
-        .map_err(|e| format!("Intent detection error: {:?}", e))?;
-
-        let intent_needed = response.trim().to_lowercase().contains("yes");
-
-        Ok(intent_needed)
-    }
-
     /// Generate acknowledgment message after tool execution
     pub async fn generate_acknowledgment(
         &self,
@@ -126,6 +150,7 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
         &self,
         chat_message: &ChatMessage,
     ) -> Result<ChatMessage, String> {
+        println!("reached process chat message");
         let response_text = self.process_message(&chat_message.content).await?;
 
         let response = ChatMessage {
@@ -152,10 +177,19 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
 
     pub async fn process_chat_message_orq(
         &self,
+        chat_id: &String,
+        user_id: &String,
         chat_message: &ChatMessage
     ) -> Result<ChatMessage, String> {
         // 1. Build Context
+        let state = {
+            let guard = self.session_registry.lock().await;
+            guard.get(chat_id).cloned()
+        };
 
+        let usr_msg = vec![chat_message];
+
+        // Get session state from db
         let system_prompt = format!("You are a teaching assistant operating inside a strict step-based orchestration system.
 
 Topic: Integration
@@ -186,24 +220,34 @@ You do not control flow. The system controls flow.
 - Chat History to which you have to answer the last message: chat_array
 
 
-");
-
-        // 2. Identify Current Status
-        // 3. Generate Response Based on next step and user query
-        println!("{:?}", system_prompt);
-
-        let response_text = self.process_message(&system_prompt).await?;
-
-        let response = ChatMessage {
-            id: Some(generate_id(Role::System)),
-            role: Role::Assistant,
-            content: response_text.clone(),
-            name: None,
-        };
-
-        Ok(response)
+        ");
+        match state {
+            Option::Some(st) => {
+                let final_st = st.lock().await;
+                let saved = self.chat_db.save_chat(&generate_id(Role::User), user_id, &serde_json::json!(usr_msg), &final_st.topic, &final_st.topic, false).await;
+                // 2. Identify Current Status
+                // 3. Generate Response Based on next step and user query
+                eprintln!("{:?}", system_prompt);
         
+                let response_text = self.process_message(&system_prompt).await?;
 
+                eprintln!("{:?}", response_text);
+        
+                let response = ChatMessage {
+                    id: Some(generate_id(Role::System)),
+                    role: Role::Assistant,
+                    content: response_text.clone(),
+                    name: None,
+                };
+        
+                Ok(response)
+                
+            }
+            Option::None => {
+                eprintln!("Session State is None, cannot process this message further");
+                Err(String::from("Session State is None, cannot process this message further"))
+            }
+        }
         
     }
 }

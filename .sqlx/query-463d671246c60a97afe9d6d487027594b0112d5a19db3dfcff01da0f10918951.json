@@ -1,0 +1,21 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "\n            INSERT INTO \"Chat\"\n                (id, \"userId\", messages, title, summary, \"createdAt\", \"updatedAt\", \"isGroupChat\")\n            VALUES ($1, $2, $3::jsonb, $4, $5, $6, $7, $8)\n            ON CONFLICT (id) DO UPDATE SET\n                messages = \"Chat\".messages,\n                title = COALESCE(EXCLUDED.title, \"Chat\".title),\n                summary = COALESCE(EXCLUDED.summary, \"Chat\".summary),\n                \"updatedAt\" = EXCLUDED.\"updatedAt\",\n                \"isGroupChat\" = EXCLUDED.\"isGroupChat\"\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Uuid",
+        "Varchar",
+        "Jsonb",
+        "Varchar",
+        "Varchar",
+        "Timestamp",
+        "Timestamp",
+        "Bool"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "463d671246c60a97afe9d6d487027594b0112d5a19db3dfcff01da0f10918951"
+}

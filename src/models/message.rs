@@ -31,7 +31,7 @@ pub struct ChatMessage {
     pub id: Option<String>,
     pub role: Role,
     pub content: String,
-    pub name: Option<String>, // For function names
+    pub name: Option<String>, // For names
 }
 
 pub fn messages_to_prompt(messages: &Vec<ChatMessage>) -> String {
