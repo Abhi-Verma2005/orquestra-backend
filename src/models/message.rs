@@ -27,7 +27,6 @@ impl ToString for Role {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ChatMessage {
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     pub role: Role,
     pub content: String,

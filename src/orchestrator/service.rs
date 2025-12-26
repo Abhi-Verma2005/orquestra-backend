@@ -6,10 +6,10 @@ use tokio::sync::Mutex;
 
 // src/orchestrator/service.rs
 use crate::{
-    config::Config, db::service::ChatDbService, llm_provider::gemini::{GeminiModel, call_gemini_text}, models::{ChatMessage, Role}, services::{
+    config::Config, db::service::ChatDbService, llm_provider::gemini::{call_gemini_text, GeminiModel}, models::{ChatMessage, Role}, services::{
         cache::CacheService, metadata_service::MetadataService,
         price_service::PriceService,
-    }, utils::gen_id::generate_id
+    }, utils::gen_id::generate_id, websocket::{handler::{broadcast_to_room, stream_text_to_room}, Clients, Rooms, UserClients}
 };
 
 pub enum TeachingStep {
@@ -179,7 +179,10 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
         &self,
         chat_id: &String,
         user_id: &String,
-        chat_message: &ChatMessage
+        chat_message: &ChatMessage,
+        clients: &Clients,
+        rooms: &Rooms,
+        user_clients: &UserClients,
     ) -> Result<ChatMessage, String> {
         // 1. Build Context
         let state = {
@@ -187,67 +190,127 @@ Provide a brief, friendly acknowledgment summarizing what wallet data was retrie
             guard.get(chat_id).cloned()
         };
 
-        let usr_msg = vec![chat_message];
+        let msg_to_save = ChatMessage {
+            id: Some(generate_id(Role::User)),
+            ..chat_message.clone()
+        };
+
+        let usr_msg = vec![msg_to_save];
 
         // Get session state from db
-        let system_prompt = format!("You are a teaching assistant operating inside a strict step-based orchestration system.
-
-Topic: Integration
-
-You MUST follow this teaching flow exactly, step by step.
-You are currently on STEP {{CURRENT_STEP}}.
-
-Teaching Flow:
-STEP 1: Give a simple, intuitive introduction to the topic (no formulas, no depth).
-STEP 2: Do a deeper explanation with core ideas and reasoning.
-STEP 3: Provide a concise cheat sheet (key points, formulas, rules).
-STEP 4: Ask ONE basic conceptual question to test understanding.
-STEP 5: Stop. Do NOT continue further.
-
-Rules:
-- Execute ONLY the current step.
-- Do NOT mention future steps.
-- Do NOT repeat previous steps.
-- Do NOT advance steps on your own.
-- When you finish your step, output the exact token: <<STEP_DONE>>
-- Do NOT output <<STEP_DONE>> unless the step is fully completed.
-
-If the step is STEP 4, end by asking the question, then output <<STEP_DONE>>.
-
-You do not control flow. The system controls flow.
-
-
-- Chat History to which you have to answer the last message: chat_array
-
-
-        ");
-        match state {
-            Option::Some(st) => {
-                let final_st = st.lock().await;
-                let saved = self.chat_db.save_chat(&generate_id(Role::User), user_id, &serde_json::json!(usr_msg), &final_st.topic, &final_st.topic, false).await;
-                // 2. Identify Current Status
-                // 3. Generate Response Based on next step and user query
-                eprintln!("{:?}", system_prompt);
         
-                let response_text = self.process_message(&system_prompt).await?;
+        let st = state.ok_or("Session State is None")?;
+        let final_st = st.lock().await;
+        let msg = serde_json::json!(usr_msg);
+        // let chat_history_check = self.chat_db.get_chat_messages(chat_id).await;
+        // eprintln!("Check Chat history: {:?}", chat_history_check);
+            let saved = self.chat_db.save_chat(chat_id, user_id, &msg, &final_st.topic, &final_st.topic, false).await;
+            match saved {
+                Ok(()) => {
+                    
+                    let mut i = 0;
+                    while i < 5 {
+                        let chat_history_result = self.chat_db.get_chat_messages(chat_id).await;
 
-                eprintln!("{:?}", response_text);
-        
-                let response = ChatMessage {
-                    id: Some(generate_id(Role::System)),
-                    role: Role::Assistant,
-                    content: response_text.clone(),
-                    name: None,
-                };
-        
-                Ok(response)
+                        match chat_history_result {
+                            Ok(chat_history) => {
+                                let system_prompt = format!("You are a teaching assistant operating inside a strict step-based orchestration system.
+            
+                                Topic: Integration
+            
+                                You MUST follow this teaching flow exactly, step by step.
+                                You are currently on STEP {{CURRENT_STEP}}.
+            
+                                Teaching Flow:
+                                STEP 1: Give a simple, intuitive introduction to the topic (no formulas, no depth).
+                                STEP 2: Do a deeper explanation with core ideas and reasoning.
+                                STEP 3: Provide a concise cheat sheet (key points, formulas, rules).
+                                STEP 4: Ask ONE basic conceptual question to test understanding.
+                                STEP 5: Stop. Do NOT continue further.
+            
+                                Rules:
+                                - Execute ONLY the current step.
+                                - Do NOT mention future steps.
+                                - Do NOT repeat previous steps.
+                                - Do NOT advance steps on your own.
+                                - When you finish your step, output the exact token: <<STEP_DONE>>
+                                - Do NOT output <<STEP_DONE>> unless the step is fully completed.
+            
+                                If the step is STEP 4, end by asking the question, then output <<STEP_DONE>>.
+            
+                                You do not control flow. The system controls flow.
+            
+            
+                                - Chat History to which you have to answer the last message: {:?}
+            
+            
+                                ", chat_history);
+                                let response_text = self.process_message(&system_prompt).await?;
+                                let ai_message = ChatMessage {
+                                    id: Some(generate_id(Role::Assistant)),
+                                    role: Role::Assistant,
+                                    content: response_text.clone(),
+                                    name: Some(String::from("assisstant"))
+                                };
+                                let saved_ai_message = self.chat_db.save_chat(chat_id, user_id, &serde_json::json!(vec![ai_message]), &final_st.topic, &final_st.topic, false).await;
+            
+                                match saved_ai_message {
+                                    Ok(()) => {
+                                        // eprintln!("Saved AI response: {:?}", response_text);
+                                    },
+                                    Err(e) => {
+                                        eprintln!("Error While saving ai message in db: {:?}", e);
+                                    }
+                                };
+                        
+                                let response = ChatMessage {
+                                    id: Some(generate_id(Role::System)),
+                                    role: Role::Assistant,
+                                    content: response_text.clone(),
+                                    name: None,
+                                };
+                                stream_text_to_room(
+                                    &chat_id,
+                                    &response.content,
+                                    &clients,
+                                    &rooms,
+                                    &user_clients,
+                                ).await;
+                            },
+                            Err(e) => {
+                                eprintln!("Encountered error: {:?}", e);
+                            }
+                        }
+                        // 2. Identify Current Status
+                        // 3. Generate Response Based on next step and user query
+                        i += 1;
+                    };
+
+                    let response = ChatMessage {
+                        id: Some(generate_id(Role::System)),
+                        role: Role::Assistant,
+                        content: String::from("Stream Done"),
+                        name: None,
+                    };
+                    Ok(response)
+
+
+                },
+                Err(e) => {
+                    eprintln!("Error While saving message in db: {:?}", e);
+                    Err(String::from("Message not saved in db, cannot process this message further"))
+                }
+            }
                 
-            }
-            Option::None => {
-                eprintln!("Session State is None, cannot process this message further");
-                Err(String::from("Session State is None, cannot process this message further"))
-            }
-        }
+        
+        // match state {
+        //     Option::Some(st) => {
+                
+        //     Option::None => {
+        //         eprintln!("Session State is None, cannot process this message further");
+        //         Err(String::from("Session State is None, cannot process this message further"))
+        //     }
+        // }
         
     }
 }

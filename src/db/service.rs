@@ -4,6 +4,8 @@ use uuid::Uuid;
 // use anyhow::{Ok, Result};
 use sqlx::{query, query_as, PgPool};
 
+use crate::models::ChatMessage;
+
 pub struct SessionStateRecord {
     pub chat_id: String,
     pub user_id: String,
@@ -119,6 +121,90 @@ impl ChatDbService {
         Ok(inserted)
 
     }
+
+
+    pub async fn get_chat_messages(
+    &self,
+    chat_id_str: &String,
+) -> Result<Vec<ChatMessage>, sqlx::Error> {
+    use serde_json::Value;
+
+    let chat_id = self.parse_id_to_uuid(chat_id_str)
+        .map_err(|e| sqlx::Error::Decode(Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("Failed to parse UUID: {}", e),
+        ))))?;
+
+    let record = sqlx::query!(
+        r#"
+        SELECT messages
+        FROM "Chat"
+        WHERE id = $1
+        "#,
+        chat_id
+    )
+    .fetch_one(&*self.pool)
+    .await?;
+
+    let mut messages_value = record.messages;
+    let mut corrected = false;
+
+    match &mut messages_value {
+        // CASE 1: Entire messages stored as string "[]"
+        Value::String(s) => {
+            if let Ok(inner) = serde_json::from_str::<Value>(s) {
+                messages_value = inner;
+                corrected = true;
+            }
+        }
+
+        // CASE 2: messages is array containing `"[]"` as first element
+        Value::Array(arr) => {
+            let original_len = arr.len();
+
+            arr.retain(|v| {
+                !matches!(v, Value::String(s) if s == "[]")
+            });
+
+            if arr.len() != original_len {
+                corrected = true;
+            }
+        }
+
+        other => {
+            eprintln!("⚠️ Unexpected messages shape: {:?}", other);
+        }
+    }
+
+
+    // Persist correction
+    if corrected {
+        sqlx::query!(
+            r#"
+            UPDATE "Chat"
+            SET messages = $1
+            WHERE id = $2
+            "#,
+            messages_value,
+            chat_id
+        )
+        .execute(&*self.pool)
+        .await?;
+    }
+
+    // Deserialize AFTER cleanup
+    let messages: Vec<ChatMessage> =
+        serde_json::from_value(messages_value)
+            .map_err(|e| {
+                sqlx::Error::Decode(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to deserialize messages: {}", e),
+                )))
+            })?;
+
+    Ok(messages)
+}
+
 
     fn parse_id_to_uuid(&self, id_str: &str) -> anyhow::Result<Uuid> {
         Ok(id_str.parse::<Uuid>()?)

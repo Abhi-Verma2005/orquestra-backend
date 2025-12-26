@@ -159,11 +159,8 @@ pub async fn handle_connection(
     while let Some(msg) = ws_receiver.next().await {
         match msg {
             Ok(Message::Text(text)) => {
-                eprintln!("[RAW_MSG] Received raw text message from {}: {}", addr_clone2, text);
                 match serde_json::from_str::<WebSocketMessage>(&text) {
                     Ok(parsed) => {
-                        eprintln!("[PARSE] Successfully parsed WebSocketMessage from {}: type={:?}, message_id={}, timestamp={}", 
-                            addr_clone2, parsed.message_type, parsed.message_id, parsed.timestamp);
                         handle_websocket_message(
                             parsed,
                             addr_clone2,
@@ -215,20 +212,20 @@ async fn handle_websocket_message(
     user_names: UserNames,
     orchestrator: Arc<OrchestratorService>,
 ) {
-    eprintln!("[HANDLE_WS_MSG] Processing message from {}: type={:?}, message_id={}", addr, message.message_type, message.message_id);
+    // eprintln!("[HANDLE_WS_MSG] Processing message from {}: type={:?}, message_id={}", addr, message.message_type, message.message_id);
     match message.message_type {
         MessageType::JoinChat => {
             let payload_clone_for_log = message.payload.clone();
-            eprintln!("[JOIN_CHAT] JoinChat message received from {} | Payload: {}", addr, payload_clone_for_log);
+            // eprintln!("[JOIN_CHAT] JoinChat message received from {} | Payload: {}", addr, payload_clone_for_log);
             match serde_json::from_value::<JoinRoomMessage>(message.payload) {
                 Ok(join_data) => {
-                    eprintln!("[JOIN_CHAT] Successfully parsed JoinRoomMessage from {}: chat_id={}, user_id={:?}, user_name={:?}", 
-                        addr, join_data.chat_id, join_data.user_id, join_data.user_name);
+                    // eprintln!("[JOIN_CHAT] Successfully parsed JoinRoomMessage from {}: chat_id={}, user_id={:?}, user_name={:?}", 
+                    //     addr, join_data.chat_id, join_data.user_id, join_data.user_name);
                     // Store user_id mapping if provided
                     if let Some(user_id) = join_data.user_id.clone() {
                         let mut user_clients_lock = user_clients.lock().await;
                         user_clients_lock.insert(addr, user_id.clone());
-                        eprintln!("[JOIN_CHAT] Stored user_id={} for socket={}", user_id, addr);
+                        // eprintln!("[JOIN_CHAT] Stored user_id={} for socket={}", user_id, addr);
                         
                         // Initialize or verify entry for session state
                         orchestrator.make_safe_entry(&join_data.chat_id, &user_id).await;
@@ -237,14 +234,14 @@ async fn handle_websocket_message(
                         if let Some(user_name) = join_data.user_name.clone() {
                             let mut user_names_lock = user_names.lock().await;
                             user_names_lock.insert(user_id, user_name.clone());
-                            eprintln!("[JOIN_CHAT] Stored user_name={} for user_id", user_name);
+                            // eprintln!("[JOIN_CHAT] Stored user_name={} for user_id", user_name);
                         }
                     }
 
                     
-                    eprintln!("[JOIN_CHAT] Calling join_room for chat_id={}, socket={}", join_data.chat_id, addr);
+                    // eprintln!("[JOIN_CHAT] Calling join_room for chat_id={}, socket={}", join_data.chat_id, addr);
                     join_room(addr, join_data.chat_id.clone(), join_data.user_name.clone(), rooms.clone(), client_rooms.clone(), user_clients.clone(), clients.clone(), room_user_ids.clone(), user_names.clone()).await;
-                    eprintln!("[JOIN_CHAT] Completed join_room for chat_id={}, socket={}", join_data.chat_id, addr);
+                    // eprintln!("[JOIN_CHAT] Completed join_room for chat_id={}, socket={}", join_data.chat_id, addr);
                 }
                 Err(e) => {
                     eprintln!("[JOIN_CHAT_ERROR] Failed to parse JoinChat payload from {}: {} | Payload: {}", addr, e, payload_clone_for_log);
@@ -253,32 +250,32 @@ async fn handle_websocket_message(
         }
         
         MessageType::ChatMessage => {
-            eprintln!("[CHAT_MSG] ChatMessage received from {} | Payload: {}", addr, message.payload);
+            // eprintln!("[CHAT_MSG] ChatMessage received from {} | Payload: {}", addr, message.payload);
             let payload_clone = message.payload.clone();
             match serde_json::from_value::<SendMessageData>(message.payload) {
                 Ok(send_data) => {
-                    eprintln!("[CHAT_MSG] Successfully parsed SendMessageData from {}: chat_id={}, user_id={:?}, is_group_chat={:?}, message_content_length={}", 
-                        addr, send_data.chat_id, send_data.user_id, send_data.is_group_chat, 
-                        send_data.message.payload.content.len());
+                    // eprintln!("[CHAT_MSG] Successfully parsed SendMessageData from {}: chat_id={}, user_id={:?}, is_group_chat={:?}, message_content_length={}", 
+                    //     addr, send_data.chat_id, send_data.user_id, send_data.is_group_chat, 
+                    //     send_data.message.payload.content.len());
                     // Store user_id if provided in message
                     if let Some(user_id) = send_data.user_id.clone() {
                         let mut user_clients_lock = user_clients.lock().await;
                         user_clients_lock.insert(addr, user_id.clone());
-                        eprintln!("[CHAT_MSG] Stored user_id={} for socket={}", user_id, addr);
+                        // eprintln!("[CHAT_MSG] Stored user_id={} for socket={}", user_id, addr);
                     }
                     
                     // Store latest wallet addresses for this connection, if provided
                     if let Some(wallet_addrs) = send_data.wallet_addresses.clone() {
                         let mut wallet_clients_lock = wallet_clients.lock().await;
                         wallet_clients_lock.insert(addr, wallet_addrs.clone());
-                        eprintln!("[CHAT_MSG] Stored wallet_addresses for socket={}: solana={:?}, ethereum={:?}", 
-                            addr, wallet_addrs.solana, wallet_addrs.ethereum);
+                        // eprintln!("[CHAT_MSG] Stored wallet_addresses for socket={}: solana={:?}, ethereum={:?}", 
+                        //     addr, wallet_addrs.solana, wallet_addrs.ethereum);
                     }
                     
                     let chat_id_for_log = send_data.chat_id.clone();
-                    eprintln!("[CHAT_MSG] Calling handle_chat_message for chat_id={}, socket={}", chat_id_for_log, addr);
-                    handle_chat_message(addr, send_data, clients.clone(), rooms.clone(), user_clients.clone(), wallet_clients.clone(), room_user_ids.clone(), user_names.clone(), orchestrator).await;
-                    eprintln!("[CHAT_MSG] Completed handle_chat_message for chat_id={}, socket={}", chat_id_for_log, addr);
+                    // eprintln!("[CHAT_MSG] Calling handle_chat_message for chat_id={}, socket={}", chat_id_for_log, addr);
+                    handle_chat_message_orq(addr, send_data, clients.clone(), rooms.clone(), user_clients.clone(), room_user_ids.clone(), user_names.clone(), orchestrator).await;
+                    // eprintln!("[CHAT_MSG] Completed handle_chat_message for chat_id={}, socket={}", chat_id_for_log, addr);
                 }
                 Err(e) => {
                     eprintln!("[CHAT_MSG_ERROR] Failed to parse ChatMessage payload from {}: {} | Payload: {}", addr, e, payload_clone);
@@ -471,7 +468,7 @@ async fn send_websocket_event_to_client(
 /// Stream a block of assistant text to all participants in a room using
 /// TextStream / TextStreamEnd events understood by the frontend.
 /// CRITICAL: Only sends to one connection per unique user_id to prevent duplicates.
-async fn stream_text_to_room(
+pub async fn stream_text_to_room(
     room_id: &str,
     text: &str,
     clients: &Clients,
@@ -559,248 +556,7 @@ async fn stream_text_to_room(
     }
 }
 
-async fn handle_chat_message(
-    addr: SocketAddr,
-    chat_data: SendMessageData,
-    clients: Clients,
-    rooms: Rooms,
-    user_clients: UserClients,
-    wallet_clients: WalletClients,
-    room_user_ids: RoomUserIds,
-    user_names: UserNames,
-    orchestrator: Arc<OrchestratorService>,
-) {
-    eprintln!("[HANDLE_MSG] ========== START handle_chat_message ==========");
-    eprintln!("[HANDLE_MSG] Socket: {}, chat_id: {}", addr, chat_data.chat_id);
-
-    let chat_user_id = match chat_data.user_id {
-        Some(id) => id,
-        None => {
-            eprintln!("Error: Missing user_id");
-            return
-        }
-    };
-    
-    // Get sender info
-    let sender_user_id = {
-        let user_clients_lock = user_clients.lock().await;
-        user_clients_lock.get(&addr).cloned()
-    };
-    
-    // Get total connected clients count
-    let total_connected_clients = {
-        let clients_lock = clients.lock().await;
-        clients_lock.len()
-    };
-    
-    eprintln!("[HANDLE_MSG] Sender info: socket={}, user_id={:?}, total_connected_clients={}", 
-        addr, sender_user_id, total_connected_clients);
-    
-    // STEP 1: Get room status and participants
-    eprintln!("[HANDLE_MSG] Checking if room '{}' exists...", chat_data.chat_id);
-    let (room_exists, _participant_details, unique_users_in_room) = {
-        let rooms_lock = rooms.lock().await;
-        let user_clients_lock = user_clients.lock().await;
-        let room_user_ids_lock = room_user_ids.lock().await;
-        
-        // Log all existing rooms for debugging
-        let all_rooms: Vec<String> = rooms_lock.keys().cloned().collect();
-        eprintln!("[HANDLE_MSG] All existing rooms: {:?}", all_rooms);
-        eprintln!("[HANDLE_MSG] Looking for room_id: '{}'", chat_data.chat_id);
-        
-        if let Some(participants) = rooms_lock.get(&chat_data.chat_id) {
-            // Build detailed participant info
-            let mut details: Vec<(SocketAddr, Option<String>)> = Vec::new();
-            for participant_addr in participants.iter() {
-                let user_id = user_clients_lock.get(participant_addr).cloned();
-                details.push((*participant_addr, user_id));
-            }
-            
-            // Get unique user_ids in this room
-            let unique_users: HashSet<String> = participants.iter()
-                .filter_map(|addr| user_clients_lock.get(addr).cloned())
-                .collect();
-            
-            // Also check room_user_ids for additional safety
-            let room_user_set = room_user_ids_lock.get(&chat_data.chat_id)
-                .map(|set| set.clone())
-                .unwrap_or_default();
-            
-            let total_unique_users = unique_users.union(&room_user_set).count();
-            
-            eprintln!("[HANDLE_MSG] ✓ Room '{}' EXISTS with {} participants (sockets), {} unique users", 
-                chat_data.chat_id, participants.len(), total_unique_users);
-            eprintln!("[HANDLE_MSG] Participants: {:?}", details);
-            
-            (true, details, total_unique_users)
-        } else {
-            eprintln!("[HANDLE_MSG] ✗ Room '{}' does NOT exist in rooms map!", chat_data.chat_id);
-            eprintln!("[HANDLE_MSG] Available rooms: {:?}", all_rooms);
-            (false, Vec::new(), 0)
-        }
-    };
-    
-    if !room_exists {
-        eprintln!("[HANDLE_MSG] ✗✗✗ EXITING EARLY - Room '{}' does not exist! ✗✗✗", chat_data.chat_id);
-        eprintln!("[HANDLE_MSG] ========== END handle_chat_message (early exit) ==========");
-        return;
-    }
-    
-    eprintln!("[HANDLE_MSG] Room exists, continuing with message processing...");
-    
-    // STEP 2: Get user_id for sender
-    let user_id = {
-        let user_clients_lock = user_clients.lock().await;
-        user_clients_lock.get(&addr).cloned()
-    };
-    
-    // STEP 3: Check if this is a group chat
-    let is_group_chat = chat_data.is_group_chat.unwrap_or(false);
-    
-    // CRITICAL VALIDATION: For individual chats (not group chats), ensure only one user is in the room
-    if !is_group_chat && unique_users_in_room > 1 {
-        let error_msg = format!("Error: This chat room has multiple users ({}), which is not allowed for individual chats. Please create a new chat.", unique_users_in_room);
-        send_error_message(addr, &chat_data.chat_id, &error_msg, clients.clone(), rooms.clone()).await;
-        return;
-    }
-    
-    // Get user_name for this user_id
-    let user_name = if let Some(ref uid) = user_id {
-        let user_names_lock = user_names.lock().await;
-        user_names_lock.get(uid).cloned()
-    } else {
-        None
-    };
-    
-    let content = chat_data.message.payload.content.trim();
-    
-    // Message routing logic:
-    // - If NOT group chat: route all messages to AI (existing behavior)
-    // - If IS group chat: check for "@ai" prefix
-    let has_ai_prefix = content.to_lowercase().starts_with("@ai");
-    let should_route_to_ai = !is_group_chat || has_ai_prefix;
-
-    println!("Reached here {}", should_route_to_ai);
-    
-    if should_route_to_ai {
-        println!("Entering detect intent");
-        // For group chats, broadcast the user's message first so everyone sees what was asked
-        if is_group_chat {
-            // Use the original message's name field if present (for deduplication), otherwise use user_id
-            let sender_id = chat_data.message.payload.name.clone()
-                .or_else(|| user_id.clone())
-                .unwrap_or_else(|| "Unknown".to_string());
-            let user_message = crate::models::ChatMessage {
-                id: Some(generate_id(Role::User)),
-                role: crate::models::Role::User,
-                content: content.to_string(), // Original message with @ai prefix
-                name: Some(sender_id), // Preserve original name for frontend deduplication
-            };
-            broadcast_to_room(
-                &chat_data.chat_id,
-                user_message,
-                clients.clone(),
-                rooms.clone(),
-                user_clients.clone(),
-                room_user_ids.clone(),
-                user_names.clone(),
-            ).await;
-        }
-        
-        // Remove "@ai" prefix (case-insensitive) and trim
-        println!("Entering detect intent");
-        let mut final_content = content
-            .trim_start()
-            .chars()
-            .skip_while(|c| c.is_whitespace())
-            .skip_while(|c| c.to_lowercase().to_string() == "@")
-            .skip_while(|c| c.to_lowercase().to_string() == "a" || c.to_lowercase().to_string() == "i")
-            .skip_while(|c| c.is_whitespace())
-            .collect::<String>()
-            .trim()
-            .to_string();
-        
-        // If content is empty after removing @ai, use a default message
-        if final_content.is_empty() {
-            println!("Entering detect intent");
-            final_content = "Hello".to_string();
-        }
-        
-        // Create message for AI with cleaned content
-        let mut ai_message = chat_data.message.payload.clone();
-        ai_message.content = final_content.clone();
-
-    
-        match orchestrator.process_chat_message(&ai_message).await {
-                Ok(ai_response) => {
-                    stream_text_to_room(
-                        &chat_data.chat_id,
-                        &ai_response.content,
-                        &clients,
-                        &rooms,
-                        &user_clients,
-                    ).await;
-                }
-                Err(e) => {
-                    eprintln!("[{}] Error processing chat message: {}", addr, e);
-                    send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
-                }
-            }
-    
-    } else if is_group_chat {
-        // Regular group message - broadcast to all participants (only if group chat)
-        // Use the original message's name field if present (for deduplication), otherwise use user_id
-        let sender_id = chat_data.message.payload.name.clone()
-            .or_else(|| user_id.clone())
-            .unwrap_or_else(|| "Unknown".to_string());
-        
-        let group_message = ChatMessage {
-            id: Some(generate_id(Role::User)),
-            role: Role::User,
-            content: content.to_string(),
-            name: Some(sender_id), // Preserve original name for frontend deduplication
-        };
-        
-        // Broadcast to all participants including sender (so everyone sees it in same order)
-        // CRITICAL: Only broadcast to users in this specific room
-        broadcast_to_room(
-            &chat_data.chat_id,
-            group_message,
-            clients.clone(),
-            rooms.clone(),
-            user_clients.clone(),
-            room_user_ids.clone(),
-            user_names.clone(),
-        ).await;
-        
-        // Also save the message to database immediately
-        // Note: Each client will also try to save, but this ensures it's saved at least once
-    } else {
-        // Not a group chat and no "@ai" prefix - this shouldn't happen with correct frontend logic
-        // But fallback: route to AI anyway (existing behavior)
-        let ai_message = chat_data.message.payload.clone();
-
-        match orchestrator.process_chat_message_orq(&chat_data.chat_id, &chat_user_id, &ai_message).await {
-            Ok(ai_response) => {
-                broadcast_to_room(
-                    &chat_data.chat_id,
-                    ai_response,
-                    clients.clone(),
-                    rooms.clone(),
-                    user_clients.clone(),
-                    room_user_ids.clone(),
-                    user_names.clone(),
-                ).await;
-            }
-            Err(e) => {
-                eprintln!("[{}] Error processing chat message: {}", addr, e);
-                send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
-            }
-        }
-    }
-}
-
-// ====================== // Main Orquestration Logic // ======================== //
+// ====================== // Main Orchestration Logic // ======================== //
 
 async fn handle_chat_message_orq(
     addr: SocketAddr,
@@ -820,6 +576,7 @@ async fn handle_chat_message_orq(
             return
         }
     };
+    
     let sender_user_id = {
         let user_clients_lock = user_clients.lock().await;
         user_clients_lock.get(&addr).cloned()
@@ -833,8 +590,6 @@ async fn handle_chat_message_orq(
     
     // eprintln!("[HANDLE_MSG] Received message from sender={}, user_id={:?}, room_id={}, total_connected_clients={}", 
         // addr, sender_user_id, chat_data.chat_id, total_connected_clients);
-    
-    // STEP 1: Get room status and participants
     let (room_exists, _participant_details, unique_users_in_room) = {
         let rooms_lock = rooms.lock().await;
         let user_clients_lock = user_clients.lock().await;
@@ -860,13 +615,13 @@ async fn handle_chat_message_orq(
             
             let total_unique_users = unique_users.union(&room_user_set).count();
             
-            // eprintln!("[HANDLE_MSG] Room {} exists with {} participants (sockets), {} unique users", 
-            //     chat_data.chat_id, participants.len(), total_unique_users);
-            // eprintln!("[HANDLE_MSG] Participants: {:?}", details);
+            eprintln!("[HANDLE_MSG] Room {} exists with {} participants (sockets), {} unique users", 
+                chat_data.chat_id, participants.len(), total_unique_users);
+            eprintln!("[HANDLE_MSG] Participants: {:?}", details);
             
             (true, details, total_unique_users)
         } else {
-            // eprintln!("[HANDLE_MSG] Room {} does NOT exist!", chat_data.chat_id);
+            eprintln!("[HANDLE_MSG] Room {} does NOT exist!", chat_data.chat_id);
             (false, Vec::new(), 0)
         }
     };
@@ -952,31 +707,23 @@ async fn handle_chat_message_orq(
         // Create message for AI with cleaned content
         let mut ai_message = chat_data.message.payload.clone();
         ai_message.content = final_content.clone();
-
-        // match orchestrator.process_chat_message(&ai_message).await {
-        //     Ok(response) => {
-                
-        //     }
-        //     Err(e) => {
-
-        //     }
-        // } 
     
         // Phase 1: Intent Detection
-        match orchestrator.process_chat_message_orq(&chat_data.chat_id, &chat_user_id, &ai_message).await {
-                        Ok(ai_response) => {
-                            stream_text_to_room(
-                                &chat_data.chat_id,
-                                &ai_response.content,
-                                &clients,
-                                &rooms,
-                                &user_clients,
-                            ).await;
-                        }
-                        Err(e) => {
-                            eprintln!("[{}] Error processing chat message: {}", addr, e);
-                            send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
-                        }
+        match orchestrator.process_chat_message_orq(&chat_data.chat_id, &chat_user_id, &ai_message, &clients, &rooms, &user_clients).await {
+                Ok(ai_response) => {
+                    eprintln!("[Successfull Orquestrated]");
+                    // stream_text_to_room(
+                    //     &chat_data.chat_id,
+                    //     &ai_response.content,
+                    //     &clients,
+                    //     &rooms,
+                    //     &user_clients,
+                    // ).await;
+                }
+                Err(e) => {
+                    eprintln!("[{}] Error processing chat message: {}", addr, e);
+                    send_error_message(addr, &chat_data.chat_id, &e, clients, rooms).await;
+                }
             }
     } else if is_group_chat {
         // Regular group message - broadcast to all participants (only if group chat)
@@ -1010,8 +757,9 @@ async fn handle_chat_message_orq(
         // Not a group chat and no "@ai" prefix - this shouldn't happen with correct frontend logic
         // But fallback: route to AI anyway (existing behavior)
         let ai_message = chat_data.message.payload.clone();
-        match orchestrator.process_chat_message_orq(&chat_data.chat_id, &chat_user_id, &ai_message).await {
+        match orchestrator.process_chat_message_orq(&chat_data.chat_id, &chat_user_id, &ai_message, &clients, &rooms, &user_clients).await {
             Ok(ai_response) => {
+                eprintln!("[Successfull Orquestrated]");
                 broadcast_to_room(
                     &chat_data.chat_id,
                     ai_response,
@@ -1031,7 +779,7 @@ async fn handle_chat_message_orq(
 }
 
 // Helper function to broadcast messages to all room participants
-async fn broadcast_to_room(
+pub async fn broadcast_to_room(
     room_id: &str,
     message: crate::models::ChatMessage,
     clients: Clients,
