@@ -1,0 +1,11 @@
+# Build artifacts
+/target
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+.envrc
+
+# Keep template env file in repo
+!.env.example
