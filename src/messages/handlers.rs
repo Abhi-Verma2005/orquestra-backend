@@ -6,12 +6,17 @@ use axum::{
     response::{sse::Event, IntoResponse, Sse},
     Json,
 };
-use futures::{Stream, StreamExt};
+use futures::Stream;
 use serde::Deserialize;
+use serde_json::json;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 use crate::{
-    ai::agent::{build_context_window, build_system_prompt, stream_completion, AgentConfig},
+    ai::agent::{
+        build_chat_messages, build_context_window, build_system_prompt, AgentEvent, AgentConfig,
+        AgentRunner,
+    },
     auth::{middleware::AuthUser, models::User, verify_token},
     conversations::handlers::get_conversation_for_user,
     error::AppError,
@@ -186,6 +191,13 @@ pub async fn stream_handler(
         ));
     }
 
+    if decoded.len() > 32000 {
+        return Ok(single_event_stream(
+            "error",
+            "Message content too long (max 32000 chars)".to_string(),
+        ));
+    }
+
     let user_id = match authenticate_stream_request(&headers, &params, &state.config.jwt_secret) {
         Ok(id) => id,
         Err(_) => {
@@ -221,53 +233,66 @@ pub async fn stream_handler(
 
     let agent_config = AgentConfig {
         model: conversation.model.clone(),
-        system_prompt,
         temperature: conversation.temperature,
         openai_api_key: state.config.openai_api_key.clone(),
     };
 
+    let initial_messages = match build_chat_messages(&context_window, &decoded, &system_prompt) {
+        Ok(m) => m,
+        Err(e) => return Ok(single_event_stream("error", e.to_string())),
+    };
+
+    let (event_tx, mut event_rx) = mpsc::unbounded_channel::<AgentEvent>();
+    let agent = AgentRunner::new(agent_config, state.tools.clone());
+
     let db = state.db.clone();
+    let conv_id = conversation_id;
+    tokio::spawn(async move {
+        match agent.run(initial_messages, event_tx.clone()).await {
+            Ok(response) => {
+                if !response.trim().is_empty() {
+                    let _ = save_assistant_message(&db, conv_id, &response).await;
+                }
+
+                let _ = sqlx::query("UPDATE conversations SET updated_at = NOW() WHERE id = $1")
+                    .bind(conv_id)
+                    .execute(&db)
+                    .await;
+            }
+            Err(e) => {
+                let _ = event_tx.send(AgentEvent::Error(e.to_string()));
+            }
+        }
+    });
 
     let stream = async_stream::stream! {
         yield Ok(sse_json("start", String::new()));
 
-        match stream_completion(&agent_config, &decoded, &context_window).await {
-            Ok(mut token_stream) => {
-                let mut full_response = String::new();
-
-                while let Some(chunk) = token_stream.next().await {
-                    match chunk {
-                        Ok(token) => {
-                            if token.is_empty() {
-                                continue;
-                            }
-                            full_response.push_str(&token);
-                            yield Ok(sse_json("token", token));
-                        }
-                        Err(e) => {
-                            yield Ok(sse_json("error", e.to_string()));
-                            return;
-                        }
-                    }
+        while let Some(event) = event_rx.recv().await {
+            let payload = match event {
+                AgentEvent::ToolCallsStarted { calls } => {
+                    json!({ "type": "tool_calls", "data": calls })
                 }
-
-                if !full_response.trim().is_empty() {
-                    if let Err(e) = save_assistant_message(&db, conversation_id, &full_response).await
-                    {
-                        tracing::error!(error = ?e, "Failed to save assistant message");
-                    }
+                AgentEvent::ToolExecuting { id, name, arguments } => {
+                    json!({ "type": "tool_start", "id": id, "name": name, "arguments": arguments })
                 }
+                AgentEvent::ToolResult { id, name, result } => {
+                    json!({ "type": "tool_result", "id": id, "name": name, "result": result })
+                }
+                AgentEvent::Token(token) => {
+                    json!({ "type": "token", "data": token })
+                }
+                AgentEvent::Done => {
+                    yield Ok(Event::default().data(json!({ "type": "done" }).to_string()));
+                    break;
+                }
+                AgentEvent::Error(error) => {
+                    yield Ok(Event::default().data(json!({ "type": "error", "data": error }).to_string()));
+                    break;
+                }
+            };
 
-                let _ = sqlx::query("UPDATE conversations SET updated_at = NOW() WHERE id = $1")
-                    .bind(conversation_id)
-                    .execute(&db)
-                    .await;
-
-                yield Ok(sse_json("done", String::new()));
-            }
-            Err(e) => {
-                yield Ok(sse_json("error", e.to_string()));
-            }
+            yield Ok(Event::default().data(payload.to_string()));
         }
     };
 

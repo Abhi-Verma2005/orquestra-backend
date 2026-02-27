@@ -22,7 +22,10 @@ mod logging;
 mod messages;
 mod models_list;
 
-use ai::tools::ToolRegistry;
+use ai::{
+    builtin_tools::{CalculatorTool, CurrentTimeTool},
+    tools::ToolRegistry,
+};
 use config::Config;
 
 #[derive(Clone, FromRef)]
@@ -117,10 +120,14 @@ async fn main() -> anyhow::Result<()> {
     sqlx::migrate!("./migrations").run(&pool).await?;
     tracing::info!("Migrations ran successfully");
 
+    let mut tools = ToolRegistry::new();
+    tools.register(Box::new(CurrentTimeTool));
+    tools.register(Box::new(CalculatorTool));
+
     let state = AppState {
         db: pool,
         config: Arc::new(config),
-        tools: Arc::new(ToolRegistry::new()),
+        tools: Arc::new(tools),
     };
 
     let app = build_router(state);

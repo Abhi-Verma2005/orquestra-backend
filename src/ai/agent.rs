@@ -1,26 +1,185 @@
+use std::sync::Arc;
+
 use anyhow::Context;
 use async_openai::types::{
-    ChatCompletionRequestAssistantMessageArgs, ChatCompletionRequestMessage,
-    ChatCompletionRequestSystemMessageArgs, ChatCompletionRequestUserMessageArgs,
+    ChatCompletionMessageToolCall, ChatCompletionRequestAssistantMessageArgs,
+    ChatCompletionRequestMessage, ChatCompletionRequestSystemMessageArgs,
+    ChatCompletionRequestToolMessageArgs, ChatCompletionRequestUserMessageArgs,
     CreateChatCompletionRequestArgs,
 };
-use futures::Stream;
 use futures::StreamExt;
 use rig::{
-    client::CompletionClient,
     completion::{AssistantContent, Message as RigMessage},
     message::UserContent,
-    providers::openai,
 };
+use serde::Serialize;
+use serde_json::Value;
+use tokio::sync::mpsc;
 
-use crate::messages::models::Message;
+use crate::{ai::tools::ToolRegistry, messages::models::Message};
 
 #[derive(Clone)]
 pub struct AgentConfig {
     pub model: String,
-    pub system_prompt: String,
     pub temperature: f64,
     pub openai_api_key: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "type", content = "data")]
+pub enum AgentEvent {
+    ToolCallsStarted {
+        calls: Vec<ChatCompletionMessageToolCall>,
+    },
+    ToolExecuting {
+        id: String,
+        name: String,
+        arguments: Value,
+    },
+    ToolResult {
+        id: String,
+        name: String,
+        result: String,
+    },
+    Token(String),
+    Done,
+    Error(String),
+}
+
+pub struct AgentRunner {
+    config: AgentConfig,
+    tools: Arc<ToolRegistry>,
+    client: async_openai::Client<async_openai::config::OpenAIConfig>,
+}
+
+impl AgentRunner {
+    pub fn new(config: AgentConfig, tools: Arc<ToolRegistry>) -> Self {
+        let openai_config = async_openai::config::OpenAIConfig::new()
+            .with_api_key(config.openai_api_key.clone());
+        let client = async_openai::Client::with_config(openai_config);
+        Self {
+            config,
+            tools,
+            client,
+        }
+    }
+
+    pub async fn run(
+        &self,
+        messages: Vec<ChatCompletionRequestMessage>,
+        event_tx: mpsc::UnboundedSender<AgentEvent>,
+    ) -> anyhow::Result<String> {
+        let mut conversation = messages;
+        let tools = self.tools.to_openai_tools();
+        let max_iterations = 10;
+
+        for iteration in 0..max_iterations {
+            tracing::debug!(iteration = iteration + 1, "Agent loop iteration");
+
+            let request = CreateChatCompletionRequestArgs::default()
+                .model(&self.config.model)
+                .temperature(self.config.temperature as f32)
+                .messages(conversation.clone())
+                .tools(tools.clone())
+                .build()
+                .context("build loop request")?;
+
+            let response = self.client.chat().create(request).await?;
+            let choice = response
+                .choices
+                .first()
+                .ok_or_else(|| anyhow::anyhow!("No response choices"))?;
+
+            if let Some(tool_calls) = &choice.message.tool_calls {
+                if !tool_calls.is_empty() {
+                    let _ = event_tx.send(AgentEvent::ToolCallsStarted {
+                        calls: tool_calls.clone(),
+                    });
+
+                    let mut assistant_builder = ChatCompletionRequestAssistantMessageArgs::default();
+                    if let Some(content) = choice.message.content.clone() {
+                        assistant_builder.content(content);
+                    }
+                    let assistant_message = assistant_builder
+                        .tool_calls(tool_calls.clone())
+                        .build()
+                        .context("build assistant tool-call message")?;
+                    conversation.push(assistant_message.into());
+
+                    for tool_call in tool_calls {
+                        let tool_name = &tool_call.function.name;
+                        let arguments: Value = serde_json::from_str(&tool_call.function.arguments)
+                            .context("parse tool call arguments")?;
+
+                        let _ = event_tx.send(AgentEvent::ToolExecuting {
+                            id: tool_call.id.clone(),
+                            name: tool_name.clone(),
+                            arguments: arguments.clone(),
+                        });
+
+                        let result = match self.tools.get(tool_name) {
+                            Some(tool) => tool
+                                .execute(arguments)
+                                .await
+                                .unwrap_or_else(|e| format!("Error: {e}")),
+                            None => format!("Unknown tool: {tool_name}"),
+                        };
+
+                        let _ = event_tx.send(AgentEvent::ToolResult {
+                            id: tool_call.id.clone(),
+                            name: tool_name.clone(),
+                            result: result.clone(),
+                        });
+
+                        conversation.push(
+                            ChatCompletionRequestToolMessageArgs::default()
+                                .tool_call_id(&tool_call.id)
+                                .content(result)
+                                .build()
+                                .context("build tool result message")?
+                                .into(),
+                        );
+                    }
+
+                    continue;
+                }
+            }
+
+            return self.stream_final_response(&conversation, &event_tx).await;
+        }
+
+        Err(anyhow::anyhow!("Max iterations reached"))
+    }
+
+    async fn stream_final_response(
+        &self,
+        messages: &[ChatCompletionRequestMessage],
+        event_tx: &mpsc::UnboundedSender<AgentEvent>,
+    ) -> anyhow::Result<String> {
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(&self.config.model)
+            .temperature(self.config.temperature as f32)
+            .messages(messages.to_vec())
+            .stream(true)
+            .build()
+            .context("build final stream request")?;
+
+        let mut stream = self.client.chat().create_stream(request).await?;
+        let mut full_response = String::new();
+
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            for choice in &chunk.choices {
+                if let Some(content) = &choice.delta.content {
+                    full_response.push_str(content);
+                    let _ = event_tx.send(AgentEvent::Token(content.clone()));
+                }
+            }
+        }
+
+        let _ = event_tx.send(AgentEvent::Done);
+        Ok(full_response)
+    }
 }
 
 pub fn build_context_window(messages: &[Message]) -> Vec<RigMessage> {
@@ -63,33 +222,16 @@ pub fn build_system_prompt(
     }
 }
 
-pub fn build_agent(config: AgentConfig) -> anyhow::Result<impl rig::completion::Prompt> {
-    let client: openai::Client = openai::Client::new(&config.openai_api_key)
-        .map_err(|e| anyhow::anyhow!("Failed to create OpenAI client: {e}"))?;
-
-    Ok(client
-        .agent(&config.model)
-        .preamble(&config.system_prompt)
-        .temperature(config.temperature)
-        .build())
-}
-
-pub async fn stream_completion(
-    config: &AgentConfig,
-    content: &str,
+pub fn build_chat_messages(
     context_window: &[RigMessage],
-) -> anyhow::Result<impl Stream<Item = anyhow::Result<String>>> {
-    let _ = build_agent(config.clone())?;
-
-    let openai_config =
-        async_openai::config::OpenAIConfig::new().with_api_key(config.openai_api_key.clone());
-    let client = async_openai::Client::with_config(openai_config);
-
+    user_message: &str,
+    system_prompt: &str,
+) -> anyhow::Result<Vec<ChatCompletionRequestMessage>> {
     let mut messages: Vec<ChatCompletionRequestMessage> = vec![
         ChatCompletionRequestSystemMessageArgs::default()
-            .content(config.system_prompt.clone())
+            .content(system_prompt)
             .build()
-            .context("system message build")?
+            .context("build system prompt")?
             .into(),
     ];
 
@@ -104,11 +246,12 @@ pub async fn stream_completion(
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+
                 messages.push(
                     ChatCompletionRequestUserMessageArgs::default()
                         .content(text)
                         .build()
-                        .context("user message build")?
+                        .context("build user history message")?
                         .into(),
                 );
             }
@@ -121,11 +264,12 @@ pub async fn stream_completion(
                     })
                     .collect::<Vec<_>>()
                     .join("\n");
+
                 messages.push(
                     ChatCompletionRequestAssistantMessageArgs::default()
                         .content(text)
                         .build()
-                        .context("assistant message build")?
+                        .context("build assistant history message")?
                         .into(),
                 );
             }
@@ -134,32 +278,11 @@ pub async fn stream_completion(
 
     messages.push(
         ChatCompletionRequestUserMessageArgs::default()
-            .content(content)
+            .content(user_message)
             .build()
-            .context("final user message build")?
+            .context("build final user message")?
             .into(),
     );
 
-    let request = CreateChatCompletionRequestArgs::default()
-        .model(&config.model)
-        .temperature(config.temperature as f32)
-        .messages(messages)
-        .stream(true)
-        .build()
-        .context("chat completion request build")?;
-
-    let stream = client.chat().create_stream(request).await?;
-
-    Ok(stream.map(|chunk| {
-        chunk
-            .map_err(|e| anyhow::anyhow!(e.to_string()))
-            .map(|response| {
-                response
-                    .choices
-                    .iter()
-                    .filter_map(|choice| choice.delta.content.clone())
-                    .collect::<Vec<_>>()
-                    .join("")
-            })
-    }))
+    Ok(messages)
 }
